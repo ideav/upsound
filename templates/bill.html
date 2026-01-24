@@ -1,0 +1,284 @@
+<div class="p-3">
+<h3>Биллинг <span id="artistName"></span></h3>
+<p class="rebill-all" style="display:none"><a onclick="location.href=location.href+'&recalcAll=1'" class="btn btn-sm btn-outline-secondary">Пересчитать всё</a></p>
+<h5>
+    Проверки: 
+    &nbsp;<a href="/{_global_.z}/bill" id="reresh" style="display:none"><svg width="28" height="28" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M25 5.99763V11.9976M25 11.9976H19M25 11.9976L20.36 7.63763C19.2853 6.56235 17.9556 5.77684 16.4952 5.35441C15.0348 4.93198 13.4911 4.88639 12.0083 5.22189C10.5255 5.5574 9.1518 6.26307 8.01547 7.27305C6.87913 8.28304 6.01717 9.56442 5.51 10.9976M3 21.9976V15.9976M3 15.9976H9M3 15.9976L7.64 20.3576C8.71475 21.4329 10.0444 22.2184 11.5048 22.6409C12.9652 23.0633 14.5089 23.1089 15.9917 22.7734C17.4745 22.4379 18.8482 21.7322 19.9845 20.7222C21.1209 19.7122 21.9828 18.4308 22.49 16.9976" stroke="#1A1A1A" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg></a>
+</h5>
+<p><b>Правки</b> <span id="fixes"><img src="/i/ajax.gif"></span></p>
+<p><b>Новых артистов</b> <span id="artists"><img src="/i/ajax.gif"></span></p>
+<p><b>Новых треков</b> <span id="tracks"><img src="/i/ajax.gif"></span></p>
+<p><b>Долей артистов</b> <span id="shares"><img src="/i/ajax.gif"></span></p>
+<table class="table table-bordered w-auto bill" style="display:none">
+<tr style="background-color:#f9f9f9;">
+<th>Дата<th>Стримы<th>Биллинг<th>Расчёт
+</tr>
+<tbody class="bill-table">
+    <tr class="bill-line bill-line-new">
+        <td class="stream-date"><img src="/i/ajax.gif">
+        <td class="qty" align="right">
+        <td class="fact" align="right">
+        <td class="rebill" align="right">
+    </tr>
+</tbody>
+</table>
+<p><a onclick="i=-10000;fetchStats();$(this).remove()" class="btn btn-sm btn-outline-secondary bill-all" style="display:none">Рассчитать все остальные</a></p>
+</div>
+<script>
+const ajaxWait='<img src="/i/ajax.gif">'
+    ,rowTemplate=$('.bill-table').html();
+var byArtist='',i=0,dates=[];
+function checkArtists(json){
+    var count=0;
+    for(var i in json)
+        count++;
+    if(count===0)
+        $('#artists').html('- OK');
+    else
+        $('#artists').html('<br />Артистов без ставки: '+count+' <a class="issues" target="bill" href="/{_global_.z}/report/57608552">Исправить</a>');
+    newApi('POST','report/63362069?JSON_KV'+byArtist,'checkTracks');
+}
+function checkTracks(json){
+    var count=0;
+    for(var i in json)
+        count++;
+    if(count===0)
+        $('#tracks').html('- OK');
+    else
+        $('#tracks').html('<br />Треков без ставки: '+count+' <a class="issues" target="bill" href="/{_global_.z}/report/63362069">Исправить</a>');
+    newApi('POST','report/61162530?JSON_KV'+byArtist,'checkShares');2
+}
+function checkShares(json){
+    var count=0;
+    for(var i in json)
+        count++;
+    if(count===0)
+        $('#shares').html('- OK');
+    else
+        $('#shares').html('<br />Треков без долей: '+count+' <a class="issues" target="bill" href="/{_global_.z}/report/61162530">Исправить</a>');
+    if($('.issues').length===0){
+        $('.bill').show();
+        if(byArtist==='')
+            newApi('POST','report/70757850?JSON_KV','billDates');
+        else
+            newApi('POST','report/74694032?JSON_KV'+byArtist,'billDates');
+    }
+    $('.reresh').show();
+}
+function flipDate(d){
+    return d.substr(-4)+d.substr(3,2)+d.substr(0,2);
+}
+var billSess=0,artList;
+function rebill(){
+    const vars={el:$('.bill-line-new').find('.rebill')[0],date:$('.bill-line-new').find('.stream-date').html()};
+    if(byArtist==='')
+        billArtists();
+        //oneBill(undefined,vars);
+    else
+        newApi('POST','report/74694050?JSON_KV&TIME=0&date='+$('.bill-line-new').find('.stream-date').html()
+                                                            +byArtist,'rebillDone','confirmed=1',vars);
+}
+let isProcessing = true;
+
+// Основная функция обработки
+async function processArtists(artList, maxConcurrent = 3) {
+  const d=$('.bill-line-new').find('.stream-date').html();
+  const baseUrl = 'https://upsound.ideav.online/upsound/report/74694050?JSON_KV&confirmed=1&TIME=0&date='+d+'&FR_byArtist=';
+  const progressElement = $('.rebill')[0];
+  const logElement = document.getElementById('log');
+
+  let completed = 0;
+  let hasError = false;
+  const total = artList.length;
+
+  function log(message) {
+      const timestamp = new Date().toLocaleTimeString();
+      logElement.innerHTML = `[${ timestamp }] ${ message }<br>`+logElement.innerHTML;
+      logElement.scrollTop = logElement.scrollHeight;
+  }
+
+  function updateProgress() {
+      const percent = Math.floor((completed / total) * 100);
+      progressElement.textContent = `Прогресс: ${ percent }% (${ completed }/${ total })`;
+  }
+
+  async function processArtist(artist) {
+      if (hasError || !isProcessing) return null;
+
+      try {
+          log(`Запрос для ${ artist.Artist } (ID: ${ artist.ArtistID }, ISRCID:  ${ artist.ISRCID })...`);
+          const formData = new URLSearchParams();
+          formData.append('_xsrf', xsrf);
+
+
+          const response = await fetch(baseUrl + artist.ArtistID + '&FR_ISRCID=' + artist.ISRCID, {
+              method: 'POST',
+              headers: {
+                  'Content-Type': 'application/x-www-form-urlencoded'
+              },
+              body: formData.toString()
+          });
+
+          if (!response.ok) {
+              throw new Error(`HTTP error! status: ${ response.status }`);
+          }
+
+          const text = await response.text();
+
+          let data;
+          try {
+              data = JSON.parse(text);
+          } catch (e) {
+              throw new Error(`Ответ не является JSON для артиста ${ artist.Artist } (ID: ${ artist.ArtistID })`);
+          }
+
+          completed++;
+          updateProgress();
+          log(`✅ Успешно: ${ artist.Artist }, ISRCID:  ${ artist.ISRCID }`);
+
+          return { success: true, artist, data };
+
+      } catch (error) {
+          hasError = true;
+          progressElement.textContent = `❌ Ошибка: ${ error.message }`;
+          progressElement.style.color = 'red';
+          log(`❌ ОШИБКА: ${ error.message }`);
+          throw error;
+      }
+  }
+
+  async function processWithLimit(items, limit) {
+      const results = [];
+      const executing = [];
+
+      for (const item of items) {
+          if (hasError || !isProcessing) break;
+
+          const promise = processArtist(item).then(result => {
+              executing.splice(executing.indexOf(promise), 1);
+              return result;
+          });
+
+          results.push(promise);
+          executing.push(promise);
+
+          if (executing.length >= limit) {
+              await Promise.race(executing);
+          }
+      }
+
+      return Promise.all(results);
+  }
+
+  updateProgress();
+  progressElement.style.color = 'black';
+  log(`🚀 Начало обработки ${ total } артистов (макс. ${ maxConcurrent } параллельных)`);
+
+  try {
+      const results = await processWithLimit(artList, maxConcurrent);
+
+      if (!hasError && isProcessing) {
+          progressElement.textContent = `✅ Готово: 100% (${ total }/${ total })`;
+          progressElement.style.color = 'green';
+          log(`🎉 Обработка завершена успешно!`);
+      } else if (!isProcessing) {
+          progressElement.textContent = `⏹️ Остановлено пользователем`;
+          progressElement.style.color = 'orange';
+          log(`⏹️ Обработка остановлена пользователем`);
+      }
+
+      return results.filter(r => r !== null);
+
+  } catch (error) {
+      log(`💥 Критическая ошибка: ${ error.message }`);
+      throw error;
+  }
+}
+
+function billArtists(){
+    newApi('POST','report/79265113?JSON_KV','processArtists');
+}
+function oneArtistBill(json,vars){
+    if(!json&&billSess>0)
+        return $(vars.el).html('Error');
+}
+function oneBill(json,vars){
+    if(!json&&billSess>0)
+        return $(vars.el).html('Error');
+    const d=$('.bill-line-new').find('.stream-date').html();
+    if(billSess<=10){
+        $(vars.el).html(' '+billSess+'0% '+ajaxWait);
+        newApi('POST','report/61162329?JSON_KV&TIME=0&date='+d+'&FR_batch=%25'+(billSess++),'oneBill','confirmed=1',{el:vars.el,date:d});
+    }
+    else
+        rebillDone(json,vars);
+}
+function rebillDone(json,vars){
+    $(vars.el).html(ajaxWait);
+    fetchStats();
+    if(byArtist==='')
+        newApi('POST','report/7425710?JSON_KV&FR_date='+vars.date,'rebillRecalc','',vars.el);
+    else
+        newApi('POST','report/74694096?JSON_KV&FR_date='+vars.date+byArtist,'rebillRecalc','',vars.el);
+}
+function rebillRecalc(json,el){
+    $(el).html(json[0].Quantity);
+}
+function fetchStats(){
+    const bill=dates.shift();
+    if(bill&&bill.date){
+        $('.bill-line-new').removeClass('bill-line-new');
+        $('.bill-table').append(rowTemplate);
+        $('.bill-line-new').find('.stream-date').html(bill.date);
+        $('.bill-line-new').find('.qty').html(ajaxWait);
+        if(byArtist==='')
+            newApi('POST','report/63350550?JSON_KV&FR_Stream='+bill.date,'fetchStatsDone');
+        else
+            newApi('POST','report/74694086?JSON_KV&FR_Stream='+bill.date+byArtist,'fetchStatsDone');
+    }
+}
+function fetchStatsDone(json){
+    $('.bill-line-new').find('.fact').html(ajaxWait);
+    $('.bill-line-new').find('.qty').html(json[0].Quantity);
+    if(byArtist==='')
+        newApi('GET','report/7425710?JSON_KV&FR_date='+json[0].Stream,'fetchBills');
+    else
+        newApi('GET','report/74694096?JSON_KV&FR_date='+json[0].Stream+byArtist,'fetchBills');
+}
+function fetchBills(json){
+    if(json[0]){
+        $('.bill-line-new').find('.fact').html(json[0].Quantity);
+        if(json[0].Quantity!==$('.bill-line-new').find('.qty').html()||search.recalcAll)
+            $('.bill-line-new').find('.fact').addClass('text-danger font-weight-bold');
+        else if(i++>7&&!search.recalcAll)
+            return $('.bill-all').show();
+        else
+            return fetchStats();
+    }
+    else
+        $('.bill-line-new').find('.fact').html('—');
+    rebill();
+}
+function fixAlita(json){
+    $('#fixes').html('Правка ALITA - Ok');
+}
+function billDates(json){
+    for(var i in json)
+        dates[i]={date:json[i].Date};
+    $('.bill-table').html('');
+    fetchStats();
+}
+function getArtist(json){
+    $('.rebill-all').show();
+    $('#artistName').html(json.object[0].val);
+}
+if(search.byArtist){
+    newApi('GET','object/10869?JSON&F_10869=@'+search.byArtist,'getArtist');
+    byArtist='&FR_byArtist='+search.byArtist;
+}
+newApi('POST','report/74673702?JSON_KV','fixAlita');
+newApi('POST','report/57608552?JSON_KV'+byArtist,'checkArtists');
+</script>
+<div id="log"></div>
