@@ -80,7 +80,26 @@ function rebill(){
         newApi('POST','report/74694050?JSON_KV&TIME=0&date='+$('.bill-line-new').find('.stream-date').html()
                                                             +byArtist,'rebillDone','confirmed=1',vars);
 }
-let isProcessing = true;
+// Cookie helpers
+function setCookie(name, value) {
+    document.cookie = `${name}=${encodeURIComponent(JSON.stringify(value))}; path=/`;
+}
+
+function getCookie(name) {
+    const match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'));
+    if (match) {
+        try {
+            return JSON.parse(decodeURIComponent(match[2]));
+        } catch(e) {
+            return null;
+        }
+    }
+    return null;
+}
+
+function deleteCookie(name) {
+    document.cookie = `${name}=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT`;
+}
 
 // Основная функция обработки
 async function processArtists(artList, maxConcurrent = 3) {
@@ -93,6 +112,12 @@ async function processArtists(artList, maxConcurrent = 3) {
   let hasError = false;
   const total = artList.length;
 
+  // Восстановление прогресса из cookie
+  const savedProgress = getCookie('billProgress');
+  if (savedProgress && savedProgress.date === d) {
+      completed = savedProgress.completed || 0;
+  }
+
   function log(message) {
       const timestamp = new Date().toLocaleTimeString();
       logElement.innerHTML = `[${ timestamp }] ${ message }<br>`+logElement.innerHTML;
@@ -102,18 +127,26 @@ async function processArtists(artList, maxConcurrent = 3) {
   function updateProgress() {
       const percent = Math.floor((completed / total) * 100);
       progressElement.textContent = `Прогресс: ${ percent }% (${ completed }/${ total })`;
+
+      // Сохранение прогресса в cookie
+      setCookie('billProgress', {
+          date: d,
+          completed: completed,
+          total: total
+      });
   }
 
-  async function processArtist(artist) {
-      if (hasError || !isProcessing) return null;
+  async function processArtist(artist, isRetry = false) {
+      if (hasError) return null;
+
+      const url = baseUrl + artist.ArtistID + '&FR_ISRCID=' + artist.ISRCID;
 
       try {
           log(`Запрос для ${ artist.Artist } (ID: ${ artist.ArtistID }, ISRCID:  ${ artist.ISRCID })...`);
           const formData = new URLSearchParams();
           formData.append('_xsrf', xsrf);
 
-
-          const response = await fetch(baseUrl + artist.ArtistID + '&FR_ISRCID=' + artist.ISRCID, {
+          const response = await fetch(url, {
               method: 'POST',
               headers: {
                   'Content-Type': 'application/x-www-form-urlencoded'
@@ -141,11 +174,21 @@ async function processArtists(artList, maxConcurrent = 3) {
           return { success: true, artist, data };
 
       } catch (error) {
+          // Добавляем URL к сообщению об ошибке
+          const errorWithUrl = `${ error.message }\nURL: ${ url }`;
+
+          // Если это не повторная попытка, пробуем еще раз через 5 секунд
+          if (!isRetry) {
+              log(`⚠️ Ошибка, повторная попытка через 5 секунд: ${ errorWithUrl }`);
+              await new Promise(resolve => setTimeout(resolve, 5000));
+              return await processArtist(artist, true);
+          }
+
           hasError = true;
           progressElement.textContent = `❌ Ошибка: ${ error.message }`;
           progressElement.style.color = 'red';
-          log(`❌ ОШИБКА: ${ error.message }`);
-          throw error;
+          log(`❌ ОШИБКА: ${ errorWithUrl }`);
+          throw new Error(errorWithUrl);
       }
   }
 
@@ -153,9 +196,13 @@ async function processArtists(artList, maxConcurrent = 3) {
       const results = [];
       const executing = [];
 
-      for (const item of items) {
-          if (hasError || !isProcessing) break;
+      // Начинаем с сохраненного индекса
+      const startIndex = savedProgress && savedProgress.date === d ? completed : 0;
 
+      for (let idx = startIndex; idx < items.length; idx++) {
+          if (hasError) break;
+
+          const item = items[idx];
           const promise = processArtist(item).then(result => {
               executing.splice(executing.indexOf(promise), 1);
               return result;
@@ -179,14 +226,13 @@ async function processArtists(artList, maxConcurrent = 3) {
   try {
       const results = await processWithLimit(artList, maxConcurrent);
 
-      if (!hasError && isProcessing) {
+      if (!hasError) {
           progressElement.textContent = `✅ Готово: 100% (${ total }/${ total })`;
           progressElement.style.color = 'green';
           log(`🎉 Обработка завершена успешно!`);
-      } else if (!isProcessing) {
-          progressElement.textContent = `⏹️ Остановлено пользователем`;
-          progressElement.style.color = 'orange';
-          log(`⏹️ Обработка остановлена пользователем`);
+
+          // Удаляем cookie после завершения
+          deleteCookie('billProgress');
       }
 
       return results.filter(r => r !== null);
