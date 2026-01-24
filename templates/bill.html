@@ -73,8 +73,17 @@ function flipDate(d){
 var billSess=0,artList;
 function rebill(){
     const vars={el:$('.bill-line-new').find('.rebill')[0],date:$('.bill-line-new').find('.stream-date').html()};
+
+    // Сохраняем состояние в куки перед запросом (Issue #6)
+    setCookie('billState', {
+        date: vars.date,
+        byArtist: byArtist,
+        remainingDates: dates.map(d => d.date),
+        timestamp: new Date().toISOString()
+    });
+
     if(byArtist==='')
-        billArtists();
+        billArtists(vars);
         //oneBill(undefined,vars);
     else
         newApi('POST','report/74694050?JSON_KV&TIME=0&date='+$('.bill-line-new').find('.stream-date').html()
@@ -102,10 +111,11 @@ function deleteCookie(name) {
 }
 
 // Основная функция обработки
-async function processArtists(artList, maxConcurrent = 3) {
-  const d=$('.bill-line-new').find('.stream-date').html();
+async function processArtists(artList, vars) {
+  const maxConcurrent = 3;
+  const d = vars ? vars.date : $('.bill-line-new').find('.stream-date').html();
   const baseUrl = 'https://upsound.ideav.online/upsound/report/74694050?JSON_KV&confirmed=1&TIME=0&date='+d+'&FR_byArtist=';
-  const progressElement = $('.rebill')[0];
+  const progressElement = vars ? vars.el : $('.rebill')[0];
   const logElement = document.getElementById('log');
 
   let completed = 0;
@@ -188,6 +198,16 @@ async function processArtists(artList, maxConcurrent = 3) {
           progressElement.textContent = `❌ Ошибка: ${ error.message }`;
           progressElement.style.color = 'red';
           log(`❌ ОШИБКА: ${ errorWithUrl }`);
+
+          // Сохраняем состояние при ошибке (Issue #6)
+          setCookie('billState', {
+              date: d,
+              byArtist: byArtist,
+              error: error.message,
+              errorUrl: url,
+              timestamp: new Date().toISOString()
+          });
+
           throw new Error(errorWithUrl);
       }
   }
@@ -233,6 +253,11 @@ async function processArtists(artList, maxConcurrent = 3) {
 
           // Удаляем cookie после завершения
           deleteCookie('billProgress');
+
+          // Вызываем rebillDone для обновления статистики и перехода к следующей строке
+          if (vars) {
+              rebillDone(null, vars);
+          }
       }
 
       return results.filter(r => r !== null);
@@ -243,8 +268,8 @@ async function processArtists(artList, maxConcurrent = 3) {
   }
 }
 
-function billArtists(){
-    newApi('POST','report/79265113?JSON_KV','processArtists');
+function billArtists(vars){
+    newApi('POST','report/79265113?JSON_KV','processArtists','',vars);
 }
 function oneArtistBill(json,vars){
     if(!json&&billSess>0)
@@ -264,6 +289,10 @@ function oneBill(json,vars){
 function rebillDone(json,vars){
     $(vars.el).html(ajaxWait);
     fetchStats();
+
+    // Очищаем сохраненное состояние после успешного завершения строки
+    deleteCookie('billState');
+
     if(byArtist==='')
         newApi('POST','report/7425710?JSON_KV&FR_date='+vars.date,'rebillRecalc','',vars.el);
     else
@@ -324,6 +353,23 @@ if(search.byArtist){
     newApi('GET','object/10869?JSON&F_10869=@'+search.byArtist,'getArtist');
     byArtist='&FR_byArtist='+search.byArtist;
 }
+
+// Проверка сохраненного состояния при загрузке страницы (Issue #6)
+const savedState = getCookie('billState');
+if (savedState) {
+    const timestamp = new Date(savedState.timestamp).toLocaleString();
+    const logDiv = document.getElementById('log');
+    if (logDiv && savedState.error) {
+        logDiv.innerHTML = `<div style="color: red; font-weight: bold; padding: 10px; background: #fff3cd; border: 1px solid #ffc107; margin-bottom: 10px;">
+            ⚠️ Обнаружено сохраненное состояние после ошибки:<br>
+            Дата: ${ savedState.date }<br>
+            Ошибка: ${ savedState.error }<br>
+            Время: ${ timestamp }<br>
+            При перезагрузке обработка продолжится с сохраненной позиции.
+        </div>`;
+    }
+}
+
 newApi('POST','report/74673702?JSON_KV','fixAlita');
 newApi('POST','report/57608552?JSON_KV'+byArtist,'checkArtists');
 </script>
