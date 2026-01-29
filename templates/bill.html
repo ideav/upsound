@@ -112,7 +112,8 @@ function deleteCookie(name) {
 
 // Основная функция обработки
 async function processArtists(artList, vars) {
-  const maxConcurrent = 3;
+  let maxConcurrent = 3;
+  const initialMaxConcurrent = 3; // Сохраняем начальное значение для восстановления
   const d = vars ? vars.date : $('.bill-line-new').find('.stream-date').html();
   const baseUrl = 'https://upsound.ideav.online/upsound/report/74694050?JSON_KV&confirmed=1&TIME=0&date='+d+'&FR_byArtist=';
   const progressElement = vars ? vars.el : $('.rebill')[0];
@@ -190,8 +191,15 @@ async function processArtists(artList, vars) {
           // Если это не повторная попытка, пробуем еще раз через 5 секунд
           if (!isRetry) {
               log(`⚠️ Ошибка, повторная попытка через 5 секунд: ${ errorWithUrl }`);
+              // Issue #9: Временно устанавливаем maxConcurrent=1 при ошибке
+              maxConcurrent = 1;
+              log(`⚙️ maxConcurrent временно установлен в 1`);
               await new Promise(resolve => setTimeout(resolve, 5000));
-              return await processArtist(artist, true);
+              const retryResult = await processArtist(artist, true);
+              // Issue #9: Восстанавливаем maxConcurrent после повторной попытки
+              maxConcurrent = initialMaxConcurrent;
+              log(`⚙️ maxConcurrent восстановлен в ${ initialMaxConcurrent }`);
+              return retryResult;
           }
 
           hasError = true;
