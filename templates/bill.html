@@ -112,8 +112,8 @@ function deleteCookie(name) {
 
 // Основная функция обработки
 async function processArtists(artList, vars) {
-  let maxConcurrent = 3;
-  const initialMaxConcurrent = 3; // Сохраняем начальное значение для восстановления
+  const initialMaxConcurrent = 2; // Сохраняем начальное значение для восстановления
+  let maxConcurrent = initialMaxConcurrent;
   const d = vars ? vars.date : $('.bill-line-new').find('.stream-date').html();
   const baseUrl = 'https://upsound.ideav.online/upsound/report/74694050?JSON_KV&confirmed=1&TIME=0&date='+d+'&FR_byArtist=';
   const progressElement = vars ? vars.el : $('.rebill')[0];
