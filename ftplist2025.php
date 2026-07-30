@@ -1,6 +1,12 @@
 <?php
     logIt(" Check files");
-    
+
+    // Папка для файлов, полученных по FTP
+    $ftp_dir = __DIR__ . '/ftp';
+    if (!is_dir($ftp_dir)) {
+        mkdir($ftp_dir, 0775, true);
+    }
+
     // === НОВЫЙ БЛОК: Файл для уникальных треков ===
     $unique_file = __DIR__ . '/unique_tracks_' . date('Y-m-d') . '.csv';
     $existing_tracks = [];
