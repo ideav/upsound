@@ -179,7 +179,10 @@ function usync_create($db, $table, $value, array $reqs = array())
 
 # ############################## Файлы списков ##############################
 
-/** Прочитать список в виде array(значение => true). */
+/**
+ * Прочитать список в виде array(значение => true).
+ * Файлы ведутся вручную, поэтому снимаем BOM, переносы CRLF и краевые пробелы.
+ */
 function usync_read_list($file)
 {
     $list = array();
@@ -190,7 +193,12 @@ function usync_read_list($file)
     if ($lines === false) {
         return $list;
     }
+    $first = true;
     foreach ($lines as $line) {
+        if ($first) {
+            $line = preg_replace('/^\xEF\xBB\xBF/', '', $line);
+            $first = false;
+        }
         $line = trim($line);
         if ($line !== '') {
             $list[$line] = true;
@@ -199,7 +207,12 @@ function usync_read_list($file)
     return $list;
 }
 
-/** Дописать значение в список. */
+/**
+ * Дописать значение в список.
+ * Перенос строки берём такой же, какой уже в файле (примеры в issue #35 — CRLF),
+ * и, если файл не заканчивается переносом, сначала добавляем его,
+ * иначе новое значение приклеится к последней строке.
+ */
 function usync_append_list($file, $value)
 {
     if (usync_dry_run()) {
@@ -209,11 +222,30 @@ function usync_append_list($file, $value)
     if (!is_dir($dir)) {
         @mkdir($dir, 0775, true);
     }
+
+    $eol    = "\r\n";
+    $prefix = '';
+    $size   = file_exists($file) ? filesize($file) : 0;
+    if ($size > 0) {
+        $h = @fopen($file, 'r');
+        if ($h) {
+            $head = fread($h, 4096);
+            if (strpos($head, "\r\n") === false && strpos($head, "\n") !== false) {
+                $eol = "\n";
+            }
+            fseek($h, -1, SEEK_END);
+            if (fread($h, 1) !== "\n") {
+                $prefix = $eol;
+            }
+            fclose($h);
+        }
+    }
+
     $h = @fopen($file, 'a');
     if (!$h) {
         return false;
     }
-    fwrite($h, $value . "\n");
+    fwrite($h, $prefix . $value . $eol);
     fclose($h);
     return true;
 }

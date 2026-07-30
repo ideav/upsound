@@ -82,8 +82,8 @@ assertEquals(1002, $calls[3]['post']['t165912539'], 'трек в ups ссыла�
 assertEquals('Дебют', $calls[3]['post']['NEW_165912540'], 'альбом в ups создаётся по названию');
 assertEquals('4620000000001', $calls[3]['post']['t165912544'], 'числовой UPC передаётся в ups');
 
-assertEquals("COLDLEEN\n", file_get_contents(USYNC_ARTISTS_FILE), 'артист дописан в logs/artists.txt');
-assertEquals("RUA1B2500001\n", file_get_contents(USYNC_TRACKS_FILE), 'ISRC дописан в logs/tracks.txt');
+assertEquals("COLDLEEN\r\n", file_get_contents(USYNC_ARTISTS_FILE), 'артист дописан в logs/artists.txt');
+assertEquals("RUA1B2500001\r\n", file_get_contents(USYNC_TRACKS_FILE), 'ISRC дописан в logs/tracks.txt');
 
 echo "\n2. Повторный запуск с теми же данными не обращается к API\n";
 $calls = array();
@@ -131,6 +131,29 @@ assertEquals(1, $stats['tracks_new'], 'трек создан');
 assertEquals(2, count($calls), 'выполнены только два запроса на трек');
 assertEquals(false, isset($calls[0]['post']['t16543']), 'ссылка на артиста в upsound не передаётся');
 assertEquals(false, isset($calls[1]['post']['t165912539']), 'ссылка на артиста в ups не передаётся');
+
+echo "\n6. Списки, набранные вручную: BOM, переносы CRLF, нет переноса в конце\n";
+$calls = array();
+file_put_contents(USYNC_ARTISTS_FILE, "\xEF\xBB\xBFCOLDLEEN\r\nColeFace");   # без переноса в конце
+file_put_contents(USYNC_TRACKS_FILE,  "AEA0D2138701\r\nAEA0D2138702");       # без переноса в конце
+$stats = usync_sync(array(
+    'AEA0D2138701' => array('isrc' => 'AEA0D2138701', 'title' => 'Старый трек',
+                            'artist' => 'COLDLEEN', 'album' => '', 'upc' => ''),
+    'AEA0D2138703' => array('isrc' => 'AEA0D2138703', 'title' => 'Новый трек',
+                            'artist' => 'ColeFace', 'album' => '', 'upc' => ''),
+));
+assertEquals(0, $stats['artists_new'], 'артисты из списка распознаны, несмотря на BOM и CRLF');
+assertEquals(1, $stats['tracks_known'], 'известный ISRC распознан');
+assertEquals(1, $stats['tracks_new'], 'создан только новый трек');
+assertEquals("AEA0D2138701\r\nAEA0D2138702\r\nAEA0D2138703\r\n", file_get_contents(USYNC_TRACKS_FILE),
+    'новый ISRC дописан с новой строки и в том же формате переносов');
+
+echo "\n7. Список с переносами LF: формат файла сохраняется\n";
+file_put_contents(USYNC_TRACKS_FILE, "AEA0D2138701\n");
+usync_sync(array(
+    'AEA0D2138704' => array('isrc' => 'AEA0D2138704', 'title' => '', 'artist' => '', 'album' => '', 'upc' => ''),
+));
+assertEquals("AEA0D2138701\nAEA0D2138704\n", file_get_contents(USYNC_TRACKS_FILE), 'дописано с переносом LF');
 
 array_map('unlink', glob($tmp . '/*'));
 @rmdir($tmp);
