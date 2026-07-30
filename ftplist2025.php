@@ -36,6 +36,9 @@
     $new_unique_tracks = [];
     $unique_headers_saved = false;
 
+    // === Все треки обработанных файлов для синхронизации с БД (issue #35) ===
+    $all_tracks = [];
+
     foreach ($contents as $file){
         if(strpos($file, "report_5273") !== false){
             $i++;
@@ -81,7 +84,20 @@
                                 'upc' => $upc
                             ];
                         }
-                        
+
+                        // === Треки для синхронизации с БД (issue #35) ===
+                        // Собираем независимо от дневного файла unique_tracks_*.csv:
+                        // сверка идёт со списками logs/artists.txt и logs/tracks.txt
+                        if (!empty($isrc) && !isset($all_tracks[$isrc])) {
+                            $all_tracks[$isrc] = [
+                                'isrc' => $isrc,
+                                'title' => $title,
+                                'artist' => $artist,
+                                'album' => $album,
+                                'upc' => $upc
+                            ];
+                        }
+
                         // Оригинальная логика для API
                         $data .= $tmp[5].";$date;".$tmp[7].";".$tmp[4].";".$tmp[3].";\r\n";
                     }
@@ -152,6 +168,10 @@
         logIt("  Новых уникальных треков не найдено");
     }
     
+    // === Синхронизация артистов и треков с БД upsound и ups (issue #35) ===
+    require_once __DIR__ . '/upsound_sync.php';
+    usync_sync($all_tracks, 'logIt');
+
     logIt(" $i files found, $j imported");
     fclose($hu);
     ftp_close($conn_id);

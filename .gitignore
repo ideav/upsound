@@ -1,0 +1,10 @@
+# Локальные токены доступа к API (см. upsound_sync.php)
+upsound_sync.config.php
+
+# Рабочие файлы скриптов загрузки
+logs/
+ftp/
+ftplist*.txt
+ftplist*.tmp
+ftplist*.log
+unique_tracks_*.csv
