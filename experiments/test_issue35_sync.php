@@ -334,7 +334,39 @@ foreach (array('ftplist2025.php', 'ftplist25.php') as $script) {
     assertEquals(1, preg_match('/if \(!usync_valid_isrc\(\$isrc\)\) \{/', $source), "$script: ISRC проверяется по длине");
 }
 
-echo "\n14. В скриптах загрузки не осталось зашитых секретов\n";
+echo "\n14. Апостроф в значении: поиск не выполняется, а не роняет синхронизацию\n";
+$calls = array();
+assertEquals(false, usync_searchable("Yan Pol' Musique"), 'значение с апострофом не ищется');
+assertEquals(false, usync_searchable('back\\slash'), 'значение с обратным слэшем не ищется');
+assertEquals(true,  usync_searchable('Bogdi Bi & ayowhykee'), 'амперсанд поиску не мешает');
+$found = usync_find('upsound', 10869, "Yan Pol' Musique");
+assertEquals(0, $found['id'], 'запись не найдена');
+assertEquals(true, isset($found['not_searchable']), 'помечено как «искать нечем»');
+assertEquals(false, isset($found['error']), 'это не ошибка API');
+assertEquals(0, count($calls), 'заведомо ломающий запрос к API не отправляется');
+
+# Альбом с апострофом: реквизит остаётся пустым, дубль в неуникальном справочнике не заводим
+$calls = array();
+$records['ups:165906636:RUA1B2500010'] = record(9010, 'RUA1B2500010');
+$stats = usync_sync(array(
+    'RUA1B2500010' => array('isrc' => 'RUA1B2500010', 'title' => 'С альбомом',
+                            'artist' => '', 'album' => "Rock'n'Roll", 'upc' => ''),
+));
+assertEquals(1, $stats['tracks_synced'], 'трек синхронизирован, несмотря на альбом с апострофом');
+$new_album = array_filter($calls, function ($call) { return strpos($call['url'], '_m_new/310') !== false; });
+assertEquals(0, count($new_album), 'альбом вслепую не создаётся — иначе дубль в неуникальном справочнике');
+$set = $calls[count($calls) - 1];
+assertEquals(false, isset($set['post']['t165912540']), 'реквизит Album Title остаётся незаполненным');
+
+echo "\n15. В режиме проверки лог не утверждает, что запись создана\n";
+$GLOBALS['usync_xsrf'] = array('upsound' => 'xsrf-upsound', 'ups' => 'xsrf-ups');
+assertEquals('будет создан', usync_state(array('id' => 0, 'existed' => false, 'dry_run' => true)),
+    'в режиме проверки — «будет создан»');
+assertEquals('уже был', usync_state(array('id' => 77, 'existed' => true, 'dry_run' => true)),
+    'найденная запись — «уже был» и в режиме проверки');
+assertEquals('создан', usync_state(array('id' => 77, 'existed' => false)), 'в боевом режиме — «создан»');
+
+echo "\n16. В скриптах загрузки не осталось зашитых секретов\n";
 foreach (array('ftplist2025.php', 'ftplist25.php') as $script) {
     $source = file_get_contents(dirname(__DIR__) . '/' . $script);
     assertEquals(false, strpos($source, 'TCAFK2135340y') !== false, "$script: нет зашитого токена");
