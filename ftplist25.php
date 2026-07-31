@@ -3,7 +3,11 @@
 // образец со всеми ключами — upsound_sync.config.sample.php.
 require_once __DIR__ . '/upsound_sync.php';
 
-logIt(" Check files");
+// Холостой прогон (USYNC_DRY_RUN или ключ dry_run в конфиге): файлы читаются и
+// разбираются, но импорт не отправляется и файл не отмечается обработанным.
+$dry = usync_dry_run();
+
+logIt(" Check files" . ($dry ? " (холостой прогон: ничего не записывается)" : ""));
 
 $ftp_server = usync_secret('sftp', 'host', '195.46.167.154');
 $username   = usync_secret('sftp', 'user', 'UpSound25');
@@ -90,21 +94,22 @@ while (false != ($file = readdir($handle))){
             
             // СОХРАНЕНИЕ ОРИГИНАЛЬНОГО ФАЙЛА В ПАПКУ ftp
             $local_file_path = $ftp_dir . '/' . $file;
-            if (file_put_contents($local_file_path, $contents) !== false) {
+            if ($dry) {
+                logIt("  Холостой прогон: файл ftp/$file не сохраняется");
+            } elseif (file_put_contents($local_file_path, $contents) !== false) {
                 logIt("  Оригинальный файл сохранен: ftp/$file");
             } else {
                 logIt("  ERROR: Не удалось сохранить файл ftp/$file");
             }
-            
+
             // Обработка содержимого
             $lines = preg_split('/\n|\r\n?/', $contents);
             $data = "";
+            $skipped_isrc = 0;
             foreach($lines as $k => $v) {
                 if($k > 0 && strlen(trim($v))) {
                     $parts = explode("\t", $v); 
                     if (count($parts) >= 9) { // Проверяем, что достаточно частей
-                        $data .= trim($parts[6]).";$date;".trim($parts[8]).";".trim($parts[5]).";".trim($parts[4]).";\r\n";
-                        
                         // === НОВЫЙ БЛОК: Извлечение данных для уникального файла ===
                         // Формат: ISRC;Title;;Artist;Album Title;upc;
                         // Колонки выгрузки: 0 track, 1 artist, 2 album_id, 3 album,
@@ -114,7 +119,16 @@ while (false != ($file = readdir($handle))){
                         $artist = isset($parts[1]) ? trim($parts[1]) : '';
                         $album  = isset($parts[3]) ? trim($parts[3]) : '';
                         $upc    = isset($parts[7]) ? trim($parts[7]) : '';
-                        
+
+                        // ISRC неверной длины в импорт не пускаем: createParent завёл бы
+                        // в ups обрезанную запись-родителя (см. upsound_sync.php)
+                        if (!usync_valid_isrc($isrc)) {
+                            $skipped_isrc++;
+                            continue;
+                        }
+
+                        $data .= trim($parts[6]).";$date;".trim($parts[8]).";".trim($parts[5]).";".trim($parts[4]).";\r\n";
+
                         // Проверяем уникальность по ISRC
                         if (!empty($isrc) && !isset($existing_tracks[$isrc]) && !isset($new_unique_tracks[$isrc])) {
                             $new_unique_tracks[$isrc] = [
@@ -142,14 +156,27 @@ while (false != ($file = readdir($handle))){
                 }
             }
             
+            if ($skipped_isrc) {
+                logIt("  $file: пропущено строк с ISRC неверной длины — $skipped_isrc");
+            }
+
             if (empty($data)) {
                 logIt("  WARNING: Нет данных для импорта в файле $file");
-                fwrite($hu, "$file\r\n"); // Все равно отмечаем как обработанный
+                if (!$dry) {
+                    fwrite($hu, "$file\r\n"); // Все равно отмечаем как обработанный
+                }
                 continue;
             }
-            
+
             $data = "DATA\r\n$data";
-            
+
+            if ($dry) {
+                logIt("  $file: холостой прогон — импорт не отправлен, файл не отмечен обработанным");
+                $j++;
+                echo ("$file: dry run<br>\n");
+                continue;
+            }
+
             // Отправка через CURL
             $ch = curl_init();
             
@@ -197,7 +224,10 @@ while (false != ($file = readdir($handle))){
 }
 
 // === НОВЫЙ БЛОК: Сохраняем уникальные треки в отдельный файл ===
-if (!empty($new_unique_tracks)) {
+if ($dry && !empty($new_unique_tracks)) {
+    logIt("  Холостой прогон: " . count($new_unique_tracks) . " уникальных треков не записаны в " . basename($unique_file));
+}
+elseif (!empty($new_unique_tracks)) {
     $file_exists = file_exists($unique_file);
     $h_unique = fopen($unique_file, 'a'); // Открываем на дозапись
     
