@@ -3,8 +3,12 @@
  * Проверка синхронизации артистов и треков (issue #35) без обращения к боевому API.
  * Запуск: php experiments/test_issue35_sync.php
  *
- * HTTP-слой подменяется через $GLOBALS['usync_http_handler'], поэтому проверяются
- * реальные адреса и параметры запросов, порядок вызовов и работа со списками.
+ * HTTP-слой подменяется через $GLOBALS['usync_http_handler'] (POST) и
+ * $GLOBALS['usync_http_get_handler'] (GET), поэтому проверяются реальные адреса и
+ * параметры запросов, порядок вызовов и работа со списками.
+ *
+ * Ключевое поведение: запись трека в ups (165906636) создаёт импорт статистики
+ * (autoParent + createParent), синхронизация её только НАХОДИТ и ДОПИСЫВАЕТ реквизиты.
  */
 
 $tmp = sys_get_temp_dir() . '/usync_test_' . getmypid();
@@ -30,8 +34,19 @@ function assertEquals($expected, $actual, $message)
     echo "       получено:  " . var_export($actual, true) . "\n";
 }
 
-/** Ответы API: ключ — "{db}:{таблица}:{значение}". */
+/** Ответ чтения: одна запись со своими реквизитами. */
+function record($id, $value, array $reqs = array())
+{
+    return array(
+        'object' => array(array('id' => (string)$id, 'up' => '1', 'val' => $value)),
+        'reqs'   => array((string)$id => $reqs),
+    );
+}
+
+/** Ответы _m_new: ключ — "{db}:{таблица}:{значение}". */
 $responses = array();
+/** Записи, которые видит чтение: ключ — "{db}:{таблица}:{значение}". */
+$records = array();
 
 $GLOBALS['usync_http_handler'] = function ($url, array $post) use (&$calls, &$responses) {
     $calls[] = array('url' => $url, 'post' => $post);
@@ -45,6 +60,25 @@ $GLOBALS['usync_http_handler'] = function ($url, array $post) use (&$calls, &$re
         return array('body' => json_encode(array('id' => 1000 + count($calls), 'obj' => 1000 + count($calls))),
                      'error' => '', 'code' => 200);
     }
+    if (preg_match('#/([a-z]+)/_m_set/(\d+)#', $url, $m)) {
+        if (isset($responses['set:' . $m[2]])) {
+            return array('body' => $responses['set:' . $m[2]], 'error' => '', 'code' => 200);
+        }
+        return array('body' => json_encode(array('id' => 1000 + count($calls), 'obj' => $m[2], 'next_act' => 'nul')),
+                     'error' => '', 'code' => 200);
+    }
+    return array('body' => '', 'error' => 'unexpected url ' . $url, 'code' => 0);
+};
+
+$GLOBALS['usync_http_get_handler'] = function ($url, $token) use (&$calls, &$records) {
+    $calls[] = array('url' => $url, 'get' => true);
+    if (preg_match('#/([a-z]+)/object/(\d+)\?JSON&LIMIT=2&F_\d+=(.*)$#', $url, $m)) {
+        $key = $m[1] . ':' . $m[2] . ':' . rawurldecode($m[3]);
+        if (isset($records[$key])) {
+            return array('body' => json_encode($records[$key]), 'error' => '', 'code' => 200);
+        }
+        return array('body' => json_encode(array('object' => null)), 'error' => '', 'code' => 200);
+    }
     return array('body' => '', 'error' => 'unexpected url ' . $url, 'code' => 0);
 };
 
@@ -53,11 +87,14 @@ $tracks = array(
                             'artist' => 'COLDLEEN', 'album' => 'Дебют', 'upc' => '4620000000001'),
 );
 
-echo "1. Новый артист и новый трек создаются в обеих базах\n";
+echo "1. Новый артист создаётся в обеих базах; трек создаётся в upsound и дописывается в ups\n";
+# Запись в ups уже заведена импортом статистики — со значением ISRC и без реквизитов.
+$records['ups:165906636:RUA1B2500001'] = record(9001, 'RUA1B2500001');
 $stats = usync_sync($tracks);
 assertEquals(1, $stats['artists_new'], 'создан один артист');
-assertEquals(1, $stats['tracks_new'], 'создан один трек');
-assertEquals(4, count($calls), 'выполнено 4 запроса: артист x2, трек x2');
+assertEquals(1, $stats['tracks_synced'], 'один трек синхронизирован');
+assertEquals(0, $stats['tracks_missing'], 'запись в ups найдена');
+assertEquals(7, count($calls), 'выполнено 7 запросов: артист x2, трек в upsound, поиск в ups, поиск и создание альбома, дозапись');
 
 assertEquals('https://upsound.ideav.online/upsound/_m_new/10869?JSON', $calls[0]['url'], 'артист создаётся в upsound');
 assertEquals('COLDLEEN', $calls[0]['post']['t10869'], 'в upsound передаётся только имя артиста');
@@ -75,12 +112,24 @@ assertEquals('4620000000001', $calls[2]['post']['t293'], 'UPC в upsound');
 assertEquals(1001, $calls[2]['post']['t16543'], 'трек в upsound ссылается на артиста upsound');
 assertEquals('Дебют', $calls[2]['post']['NEW_10868'], 'альбом в upsound создаётся по названию');
 
-assertEquals('https://upsound.ideav.online/ups/_m_new/165906636?JSON', $calls[3]['url'], 'трек создаётся в ups');
-assertEquals('RUA1B2500001', $calls[3]['post']['t165906636'], 'ISRC — значение записи трека в ups');
-assertEquals('Первый трек', $calls[3]['post']['t165912542'], 'название трека в ups');
-assertEquals(1002, $calls[3]['post']['t165912539'], 'трек в ups ссылается на артиста ups');
-assertEquals('Дебют', $calls[3]['post']['NEW_165912540'], 'альбом в ups создаётся по названию');
-assertEquals('4620000000001', $calls[3]['post']['t165912544'], 'числовой UPC передаётся в ups');
+assertEquals('https://upsound.ideav.online/ups/object/165906636?JSON&LIMIT=2&F_165906636=RUA1B2500001',
+    $calls[3]['url'], 'запись трека в ups ищется по точному значению ISRC');
+assertEquals('https://upsound.ideav.online/ups/object/310?JSON&LIMIT=2&F_310=%D0%94%D0%B5%D0%B1%D1%8E%D1%82',
+    $calls[4]['url'], 'альбом в ups сначала ищется в справочнике');
+assertEquals('https://upsound.ideav.online/ups/_m_new/310?JSON', $calls[5]['url'], 'отсутствующий альбом заводится');
+assertEquals('Дебют', $calls[5]['post']['t310'], 'альбом заводится по названию');
+
+assertEquals('https://upsound.ideav.online/ups/_m_set/9001?JSON', $calls[6]['url'], 'реквизиты дописываются найденной записи');
+assertEquals('Первый трек', $calls[6]['post']['t165912542'], 'название трека дописано в ups');
+assertEquals('4620000000001', $calls[6]['post']['t165912544'], 'числовой UPC дописан в ups');
+assertEquals(1002, $calls[6]['post']['t165912539'], 'ссылка на артиста ups дописана');
+assertEquals(1006, $calls[6]['post']['t165912540'], 'альбом передан ссылкой (ID записи), а не именем');
+assertEquals(1003, $calls[6]['post']['t180202603'], 'реквизит ID = ID трека из upsound');
+
+$new_in_ups = array_filter($calls, function ($call) {
+    return strpos($call['url'], '_m_new/165906636') !== false;
+});
+assertEquals(0, count($new_in_ups), 'запись трека в ups не создаётся — её заводит импорт статистики');
 
 assertEquals("COLDLEEN\r\n", file_get_contents(USYNC_ARTISTS_FILE), 'артист дописан в logs/artists.txt');
 assertEquals("RUA1B2500001\r\n", file_get_contents(USYNC_TRACKS_FILE), 'ISRC дописан в logs/tracks.txt');
@@ -91,51 +140,90 @@ $stats = usync_sync($tracks);
 assertEquals(0, count($calls), 'запросов нет — всё есть в списках');
 assertEquals(1, $stats['tracks_known'], 'трек учтён как уже известный');
 
-echo "\n3. Новый трек известного артиста: ID артиста запрашивается повторно\n";
+echo "\n3. Заполненные реквизиты не перезаписываются — дописывается только ID\n";
 $calls = array();
 $responses['upsound:10869:COLDLEEN'] = json_encode(array('id' => 1001, 'obj' => 10869, 'warning' => 'Запись уже существует'));
 $responses['ups:308:COLDLEEN']       = json_encode(array('id' => 1002, 'obj' => 308,   'warning' => 'Запись уже существует'));
+$records['ups:165906636:RUA1B2500002'] = record(9002, 'RUA1B2500002', array(
+    165912542    => 'Второй трек',
+    'ref_165912539' => '308:1002',
+    165912539    => 'COLDLEEN',
+    'ref_165912540' => '310:1006,1007',
+    165912540    => 'Дебют,Сборник',
+    165912544    => '4620000000002',
+));
 $stats = usync_sync(array(
     'RUA1B2500002' => array('isrc' => 'RUA1B2500002', 'title' => 'Второй трек',
-                            'artist' => 'COLDLEEN', 'album' => '', 'upc' => 'нет'),
+                            'artist' => 'COLDLEEN', 'album' => 'Дебют', 'upc' => '4620000000002'),
 ));
 assertEquals(0, $stats['artists_new'], 'артист заново не создаётся');
-assertEquals(1, $stats['tracks_new'], 'трек создан');
-assertEquals(4, count($calls), 'ID существующего артиста получен теми же командами _m_new');
+assertEquals(1, $stats['tracks_synced'], 'трек синхронизирован');
 assertEquals(1001, $calls[2]['post']['t16543'], 'использован ID существующего артиста в upsound');
-assertEquals(1002, $calls[3]['post']['t165912539'], 'использован ID существующего артиста в ups');
-assertEquals(false, isset($calls[2]['post']['NEW_10868']), 'пустой альбом не передаётся');
-assertEquals(false, isset($calls[3]['post']['t165912544']), 'нечисловой UPC в ups не передаётся');
+$set = $calls[count($calls) - 1];
+assertEquals('https://upsound.ideav.online/ups/_m_set/9002?JSON', $set['url'], 'дозапись идёт в найденную запись');
+assertEquals(array('t180202603', 'token', '_xsrf'), array_keys($set['post']),
+    'передан только ID: множественные ссылки Artist и Album Title перезаписью были бы обрезаны');
+assertEquals(1003, $set['post']['t180202603'], 'ID трека из upsound');
 
-echo "\n4. Ошибка API: запись не попадает в список и будет повторена\n";
+echo "\n4. Реквизиты уже заполнены целиком: изменяющий запрос не отправляется\n";
+$calls = array();
+$records['ups:165906636:RUA1B2500005'] = record(9005, 'RUA1B2500005', array(
+    165912542 => 'Пятый трек',
+    180202603 => '1003',
+));
+$responses['upsound:291:RUA1B2500005'] = json_encode(array('id' => 1003, 'obj' => 291, 'warning' => 'Запись уже существует'));
+$stats = usync_sync(array(
+    'RUA1B2500005' => array('isrc' => 'RUA1B2500005', 'title' => 'Пятый трек',
+                            'artist' => '', 'album' => '', 'upc' => ''),
+));
+assertEquals(1, $stats['tracks_synced'], 'трек учтён синхронизированным');
+$sets = array_filter($calls, function ($call) { return strpos($call['url'], '_m_set') !== false; });
+assertEquals(0, count($sets), 'дописывать нечего — запрос на изменение не отправлен');
+
+echo "\n5. Записи в ups нет: трек не попадает в список и будет повторён\n";
+$calls = array();
+$stats = usync_sync(array(
+    'RUA1B2500006' => array('isrc' => 'RUA1B2500006', 'title' => 'Шестой трек',
+                            'artist' => '', 'album' => '', 'upc' => ''),
+));
+assertEquals(1, $stats['tracks_missing'], 'учтено как отсутствие записи, а не как ошибка');
+assertEquals(0, $stats['tracks_failed'], 'это не ошибка API');
+assertEquals(false, strpos(file_get_contents(USYNC_TRACKS_FILE), 'RUA1B2500006') !== false,
+    'трек без записи в ups не дописан в список');
+
+echo "\n6. Ошибка API: запись не попадает в список и будет повторена\n";
 $calls = array();
 $responses['ups:308:Новый Артист'] = json_encode(array('error' => 'У вас нет прав на создание объектов этого типа'));
+$records['ups:165906636:RUA1B2500003'] = record(9003, 'RUA1B2500003');
 $stats = usync_sync(array(
     'RUA1B2500003' => array('isrc' => 'RUA1B2500003', 'title' => 'Третий трек',
                             'artist' => 'Новый Артист', 'album' => 'Альбом', 'upc' => '1'),
 ));
 assertEquals(1, $stats['artists_failed'], 'ошибка артиста учтена');
-assertEquals(1, $stats['tracks_failed'], 'трек без артиста не создан');
+assertEquals(1, $stats['tracks_failed'], 'трек без артиста не синхронизирован');
 assertEquals(false, strpos(file_get_contents(USYNC_ARTISTS_FILE), 'Новый Артист') !== false,
     'артист с ошибкой не дописан в список');
 assertEquals(false, strpos(file_get_contents(USYNC_TRACKS_FILE), 'RUA1B2500003') !== false,
     'трек с ошибкой не дописан в список');
 
-echo "\n5. Пустое имя артиста: трек создаётся без ссылки на артиста\n";
+echo "\n7. Пустое имя артиста: ссылка на артиста не дописывается\n";
 $calls = array();
+$records['ups:165906636:RUA1B2500004'] = record(9004, 'RUA1B2500004');
 $stats = usync_sync(array(
     'RUA1B2500004' => array('isrc' => 'RUA1B2500004', 'title' => 'Без артиста',
                             'artist' => '', 'album' => '', 'upc' => ''),
 ));
-assertEquals(1, $stats['tracks_new'], 'трек создан');
-assertEquals(2, count($calls), 'выполнены только два запроса на трек');
+assertEquals(1, $stats['tracks_synced'], 'трек синхронизирован');
+assertEquals(3, count($calls), 'создание в upsound, поиск в ups и дозапись');
 assertEquals(false, isset($calls[0]['post']['t16543']), 'ссылка на артиста в upsound не передаётся');
-assertEquals(false, isset($calls[1]['post']['t165912539']), 'ссылка на артиста в ups не передаётся');
+assertEquals(false, isset($calls[2]['post']['t165912539']), 'ссылка на артиста в ups не дописывается');
+assertEquals(false, isset($calls[2]['post']['t165912544']), 'пустой UPC в ups не дописывается');
 
-echo "\n6. Списки, набранные вручную: BOM, переносы CRLF, нет переноса в конце\n";
+echo "\n8. Списки, набранные вручную: BOM, переносы CRLF, нет переноса в конце\n";
 $calls = array();
 file_put_contents(USYNC_ARTISTS_FILE, "\xEF\xBB\xBFCOLDLEEN\r\nColeFace");   # без переноса в конце
 file_put_contents(USYNC_TRACKS_FILE,  "AEA0D2138701\r\nAEA0D2138702");       # без переноса в конце
+$records['ups:165906636:AEA0D2138703'] = record(9010, 'AEA0D2138703');
 $stats = usync_sync(array(
     'AEA0D2138701' => array('isrc' => 'AEA0D2138701', 'title' => 'Старый трек',
                             'artist' => 'COLDLEEN', 'album' => '', 'upc' => ''),
@@ -144,12 +232,13 @@ $stats = usync_sync(array(
 ));
 assertEquals(0, $stats['artists_new'], 'артисты из списка распознаны, несмотря на BOM и CRLF');
 assertEquals(1, $stats['tracks_known'], 'известный ISRC распознан');
-assertEquals(1, $stats['tracks_new'], 'создан только новый трек');
+assertEquals(1, $stats['tracks_synced'], 'синхронизирован только новый трек');
 assertEquals("AEA0D2138701\r\nAEA0D2138702\r\nAEA0D2138703\r\n", file_get_contents(USYNC_TRACKS_FILE),
     'новый ISRC дописан с новой строки и в том же формате переносов');
 
-echo "\n7. Список с переносами LF: формат файла сохраняется\n";
+echo "\n9. Список с переносами LF: формат файла сохраняется\n";
 file_put_contents(USYNC_TRACKS_FILE, "AEA0D2138701\n");
+$records['ups:165906636:AEA0D2138704'] = record(9011, 'AEA0D2138704');
 usync_sync(array(
     'AEA0D2138704' => array('isrc' => 'AEA0D2138704', 'title' => '', 'artist' => '', 'album' => '', 'upc' => ''),
 ));
