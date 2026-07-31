@@ -496,11 +496,59 @@ function usync_log($logger, $message)
 # ############################### Синхронизация ###############################
 
 /**
+ * Склейка соавторов одной строкой: "LEVU & Ксюша Фавия", "AMiD feat. T1MC",
+ * "1996, D.masta, Смоки Мо". Это не артист, а перечисление — новых записей по таким
+ * строкам не заводим. Именно так в ups набралось больше трёхсот записей-перечислений,
+ * у которых нет и не может быть пары в upsound.
+ */
+function usync_is_collab($name)
+{
+    return (bool)preg_match('/&|,|\bfeat\b|\bft\b|\bvs\b/ui', $name);
+}
+
+/**
+ * Склейка соавторов: не создаём, но если запись уже есть в ОБЕИХ базах — ссылку на неё
+ * проставляем, чтобы не рвать то, что уже связано.
+ *
+ * Часть склеек лежит в ups с экранированной запятой ("Son\, Fire!"), а в выгрузке она
+ * обычная. Найти их поиском нельзя: значение с обратным слэшем ядро в фильтр не пускает
+ * (см. usync_searchable), да и само экранирование там своё. Такие склейки просто
+ * пропускаются — по заданию заводить их всё равно не надо.
+ */
+function usync_link_collab($name, $logger = null)
+{
+    $upsound = usync_find('upsound', USYNC_UPSOUND_ARTIST, $name);
+    if (isset($upsound['error'])) {
+        usync_log($logger, "Артист '$name': upsound — " . $upsound['error']);
+        return array('error' => $upsound['error']);
+    }
+    $ups = usync_find('ups', USYNC_UPS_ARTIST, $name);
+    if (isset($ups['error'])) {
+        usync_log($logger, "Артист '$name': ups — " . $ups['error']);
+        return array('error' => $ups['error']);
+    }
+    if (!$upsound['id'] || !$ups['id']) {
+        usync_log($logger, "Артист '$name': склейка соавторов — запись не заводим"
+            . ($upsound['id'] || $ups['id'] ? ' (есть только в одной базе)' : ''));
+        return array('collab' => true);
+    }
+
+    usync_log($logger, "Артист '$name': склейка соавторов, обе записи уже есть — "
+        . 'upsound ID=' . $upsound['id'] . ', ups ID=' . $ups['id']);
+    return array('upsound' => $upsound['id'], 'ups' => $ups['id']);
+}
+
+/**
  * Пункты 1 и 2 задания: артист в upsound, затем он же в ups с реквизитом ID.
- * Возвращает array('upsound' => id, 'ups' => id) либо array('error' => текст).
+ * Возвращает array('upsound' => id, 'ups' => id), array('collab' => true) для склейки
+ * соавторов либо array('error' => текст).
  */
 function usync_sync_artist($name, $logger = null)
 {
+    if (usync_is_collab($name)) {
+        return usync_link_collab($name, $logger);
+    }
+
     $upsound = usync_create('upsound', USYNC_UPSOUND_ARTIST, $name);
     if (isset($upsound['error'])) {
         usync_log($logger, "Артист '$name': upsound — " . $upsound['error']);
@@ -628,6 +676,7 @@ function usync_sync(array $tracks, $logger = null)
     $stats = array(
         'artists_new'     => 0,
         'artists_failed'  => 0,
+        'artists_collab'  => 0, # склейка соавторов — запись не заводим
         'tracks_synced'   => 0, # запись в ups дополнена (или уже была полной)
         'tracks_failed'   => 0,
         'tracks_missing'  => 0, # импорт статистики ещё не завёл запись в ups
@@ -671,6 +720,13 @@ function usync_sync(array $tracks, $logger = null)
             continue;
         }
         $result = usync_sync_artist($name, $logger);
+        if (isset($result['collab'])) {
+            # Записи нет и заводить её не надо; треки этого «артиста» синхронизируем
+            # без ссылки. В список не дописываем — вдруг склейку разложат по артистам.
+            $artist_ids[$name] = null;
+            $stats['artists_collab']++;
+            continue;
+        }
         if (isset($result['error'])) {
             $stats['artists_failed']++;
             continue;
@@ -695,15 +751,23 @@ function usync_sync(array $tracks, $logger = null)
         # Артист трека мог быть синхронизирован в прошлые запуски — тогда ID берём по имени.
         $name = isset($track['artist']) ? trim($track['artist']) : '';
         $ids  = null;
+        # array_key_exists, а не isset: у склейки соавторов значение null, и isset()
+        # заставлял бы искать её заново на каждом треке.
         if ($name !== '') {
-            if (!isset($artist_ids[$name])) {
+            if (!array_key_exists($name, $artist_ids)) {
                 $result = usync_sync_artist($name, $logger);
-                if (isset($result['error'])) {
+                if (isset($result['collab'])) {
+                    $artist_ids[$name] = null;
+                    $stats['artists_collab']++;
+                }
+                elseif (isset($result['error'])) {
                     usync_log($logger, "Трек $isrc пропущен: не удалось получить ID артиста '$name'");
                     $stats['tracks_failed']++;
                     continue;
                 }
-                $artist_ids[$name] = $result;
+                else {
+                    $artist_ids[$name] = $result;
+                }
             }
             $ids = $artist_ids[$name];
         }
@@ -723,6 +787,7 @@ function usync_sync(array $tracks, $logger = null)
     usync_log($logger, 'Синхронизация: артистов ' . (usync_dry_run() ? 'будет создано ' : 'создано ')
         . $stats['artists_new']
         . ', ошибок ' . $stats['artists_failed']
+        . ', склеек пропущено ' . $stats['artists_collab']
         . '; треков ' . (usync_dry_run() ? 'будет дополнено ' : 'дополнено ') . $stats['tracks_synced']
         . ', ошибок ' . $stats['tracks_failed']
         . ', нет в ups ' . $stats['tracks_missing']
