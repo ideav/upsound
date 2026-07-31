@@ -3,7 +3,11 @@
     // образец со всеми ключами — upsound_sync.config.sample.php.
     require_once __DIR__ . '/upsound_sync.php';
 
-    logIt(" Check files");
+    // Холостой прогон (USYNC_DRY_RUN или ключ dry_run в конфиге): файлы читаются и
+    // разбираются, но импорт не отправляется и файл не отмечается обработанным.
+    $dry = usync_dry_run();
+
+    logIt(" Check files" . ($dry ? " (холостой прогон: ничего не записывается)" : ""));
 
     $ftp_server    = usync_secret('ftp', 'host', 'ftp.maggregator.com');
     $ftp_user_name = usync_secret('ftp', 'user', 'upsound');
@@ -73,13 +77,14 @@
                 
                 // СОХРАНЕНИЕ РАСПАКОВАННОГО ФАЙЛА (опционально)
                 $local_file_txt = $ftp_dir . '/' . str_replace('.gz', '', $file) . '.txt';
-                if (file_put_contents($local_file_txt, $contents_gz) !== false) {
+                if (!$dry && file_put_contents($local_file_txt, $contents_gz) !== false) {
                     logIt("  Распакованный .txt файл сохранен: ftp/" . basename($local_file_txt));
                 }
 
                 $lines = preg_split('/\n|\r\n?/', $contents_gz);
                 $data = "";
-                
+                $skipped_isrc = 0;
+
                 foreach($lines as $k => $v) {
                     if($k > 0 && strlen($v)){
                         $v = substr($v, 0, strposX($v, "\t", 2)) . substr($v, strposX($v, "\t", 3));
@@ -96,7 +101,14 @@
                         $artist  = isset($tmp[1]) ? trim($tmp[1]) : '';
                         $album   = isset($tmp[2]) ? trim($tmp[2]) : '';
                         $upc     = isset($tmp[6]) ? trim($tmp[6]) : '';
-                        
+
+                        // ISRC неверной длины в импорт не пускаем: createParent завёл бы
+                        // в ups обрезанную запись-родителя (см. upsound_sync.php)
+                        if (!usync_valid_isrc($isrc)) {
+                            $skipped_isrc++;
+                            continue;
+                        }
+
                         // Проверяем уникальность по ISRC
                         if (!empty($isrc) && !isset($existing_tracks[$isrc]) && !isset($new_unique_tracks[$isrc])) {
                             $new_unique_tracks[$isrc] = [
@@ -127,38 +139,50 @@
                 }
                 
                 $data = "DATA\r\n$data";
-                
-                // Отправка на API (оригинальная логика)
-                $ch = curl_init();
-                $h = fopen(__DIR__.'/ftplist.tmp', 'w');
-                fwrite($h, $data);
-                fclose($h);
-                $cFile = curl_file_create(__DIR__.'/ftplist.tmp','text/plain','bki_file');
-                $post = array('import'=>'1'
-                            ,'autoParent'=>'165906636'
-                            ,'createParent' => '1'
-                            ,'bki_file'=>$cFile
-                            ,'_xsrf'=>usync_xsrf('ups')
-                            ,'token'=>usync_token('ups'));
-        
-                curl_setopt($ch, CURLOPT_POST,true);
-                curl_setopt($ch, CURLOPT_POSTFIELDS, $post);
-                curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-                curl_setopt($ch, CURLOPT_URL,"https://upsound.ideav.online/ups/object/10667430?JSON&noorder");
-                $result=curl_exec($ch);
-                echo print_r($result);
-                echo curl_error($ch);
-                curl_close($ch);
-                
-                fwrite($hu, "$file\r\n");
-                logIt("  $file imported");
-                $j++;
+                if ($skipped_isrc) {
+                    logIt("  $file: пропущено строк с ISRC неверной длины — $skipped_isrc");
+                }
+
+                if ($dry) {
+                    logIt("  $file: холостой прогон — импорт не отправлен, файл не отмечен обработанным");
+                    $j++;
+                }
+                else {
+                    // Отправка на API (оригинальная логика)
+                    $ch = curl_init();
+                    $h = fopen(__DIR__.'/ftplist.tmp', 'w');
+                    fwrite($h, $data);
+                    fclose($h);
+                    $cFile = curl_file_create(__DIR__.'/ftplist.tmp','text/plain','bki_file');
+                    $post = array('import'=>'1'
+                                ,'autoParent'=>'165906636'
+                                ,'createParent' => '1'
+                                ,'bki_file'=>$cFile
+                                ,'_xsrf'=>usync_xsrf('ups')
+                                ,'token'=>usync_token('ups'));
+
+                    curl_setopt($ch, CURLOPT_POST,true);
+                    curl_setopt($ch, CURLOPT_POSTFIELDS, $post);
+                    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+                    curl_setopt($ch, CURLOPT_URL,"https://upsound.ideav.online/ups/object/10667430?JSON&noorder");
+                    $result=curl_exec($ch);
+                    echo print_r($result);
+                    echo curl_error($ch);
+                    curl_close($ch);
+
+                    fwrite($hu, "$file\r\n");
+                    logIt("  $file imported");
+                    $j++;
+                }
             }
         }
     }
     
     // === НОВЫЙ БЛОК: Сохраняем уникальные треки в отдельный файл ===
-    if (!empty($new_unique_tracks)) {
+    if ($dry && !empty($new_unique_tracks)) {
+        logIt("  Холостой прогон: " . count($new_unique_tracks) . " уникальных треков не записаны в " . basename($unique_file));
+    }
+    elseif (!empty($new_unique_tracks)) {
         $file_exists = file_exists($unique_file);
         $h_unique = fopen($unique_file, 'a'); // Открываем на дозапись
         

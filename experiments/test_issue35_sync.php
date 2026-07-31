@@ -285,7 +285,56 @@ assertEquals('Не задан токен доступа к БД upsound (USYNC_T
 assertEquals(0, count($calls), 'запрос с пустым токеном не отправляется');
 putenv('USYNC_TOKEN_UPSOUND=test-token-upsound');
 
-echo "\n12. В скриптах загрузки не осталось зашитых секретов\n";
+echo "\n12. ISRC неверной длины не принимаются\n";
+$calls = array();
+$records['ups:165906636:RUA1B2500008'] = record(9008, 'RUA1B2500008');
+$stats = usync_sync(array(
+    'RUA1B2500008' => array('isrc' => 'RUA1B2500008', 'title' => 'Нормальный',
+                            'artist' => 'Годный Артист', 'album' => '', 'upc' => ''),
+    'RUA1D2378'    => array('isrc' => 'RUA1D2378', 'title' => 'Обрезок',
+                            'artist' => 'Мусорный Артист', 'album' => '', 'upc' => ''),
+    'isrc'         => array('isrc' => 'isrc', 'title' => 'Заголовок',
+                            'artist' => 'Artist', 'album' => '', 'upc' => ''),
+    'RUA1B25000090' => array('isrc' => 'RUA1B25000090', 'title' => 'Длинный',
+                            'artist' => 'Длинный Артист', 'album' => '', 'upc' => ''),
+));
+assertEquals(3, $stats['tracks_invalid'], 'отброшены и короткий, и заголовок, и слишком длинный');
+assertEquals(1, $stats['tracks_synced'], 'корректный ISRC синхронизирован');
+assertEquals(1, $stats['artists_new'], 'артист заведён только у корректного трека');
+$bad = array_filter($calls, function ($call) {
+    return strpos($call['url'], 'RUA1D2378') !== false || strpos($call['url'], 'F_10869=%D0%9C%D1%83%D1%81%D0%BE%D1%80') !== false
+        || (isset($call['post']['t10869']) && $call['post']['t10869'] === 'Мусорный Артист');
+});
+assertEquals(0, count($bad), 'по отброшенному ISRC не делается ни одного запроса');
+assertEquals(12, USYNC_ISRC_LENGTH, 'корректная длина ISRC — 12 символов');
+assertEquals(true, usync_valid_isrc('RUA1D2574249'), 'RUA1D2574249 принимается');
+assertEquals(false, usync_valid_isrc('RUA1D257424'), 'на символ короче — нет');
+
+echo "\n13. dry_run читается из конфига, а не только из окружения\n";
+putenv('USYNC_DRY_RUN=');
+$GLOBALS['usync_test_config'] = true;
+assertEquals(false, usync_dry_run(), 'без настройки холостого прогона нет');
+putenv('USYNC_DRY_RUN=1');
+assertEquals(true, usync_dry_run(), 'переменная окружения включает');
+putenv('USYNC_DRY_RUN=0');
+assertEquals(false, usync_dry_run(), 'значение 0 выключает');
+putenv('USYNC_DRY_RUN=');
+$sample = file_get_contents(dirname(__DIR__) . '/upsound_sync.config.sample.php');
+assertEquals(1, preg_match("/'dry_run'\s*=>/", $sample), 'ключ dry_run описан в образце конфига');
+$sync = file_get_contents(dirname(__DIR__) . '/upsound_sync.php');
+assertEquals(1, preg_match("/config\['dry_run'\]|\\\$config\['dry_run'\]|empty\(\\\$config\['dry_run'\]\)/", $sync),
+    'usync_dry_run() читает ключ из конфига');
+foreach (array('ftplist2025.php', 'ftplist25.php') as $script) {
+    $source = file_get_contents(dirname(__DIR__) . '/' . $script);
+    assertEquals(1, preg_match('/\$dry = usync_dry_run\(\);/', $source), "$script: режим определяется в начале");
+    assertEquals(1, preg_match('/if \(!\$dry && file_put_contents|if \(\$dry\) \{\s*\n\s*logIt\("  Холостой/u', $source),
+        "$script: в холостом прогоне файл выгрузки не сохраняется");
+    assertEquals(1, preg_match('/холостой прогон — импорт не отправлен, файл не отмечен обработанным/u', $source),
+        "$script: в холостом прогоне нет ни импорта, ни отметки об обработке");
+    assertEquals(1, preg_match('/if \(!usync_valid_isrc\(\$isrc\)\) \{/', $source), "$script: ISRC проверяется по длине");
+}
+
+echo "\n14. В скриптах загрузки не осталось зашитых секретов\n";
 foreach (array('ftplist2025.php', 'ftplist25.php') as $script) {
     $source = file_get_contents(dirname(__DIR__) . '/' . $script);
     assertEquals(false, strpos($source, 'TCAFK2135340y') !== false, "$script: нет зашитого токена");

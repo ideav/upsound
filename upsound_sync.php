@@ -35,6 +35,19 @@ if (!defined('USYNC_ARTISTS_FILE')) define('USYNC_ARTISTS_FILE', USYNC_LOG_DIR .
 if (!defined('USYNC_TRACKS_FILE'))  define('USYNC_TRACKS_FILE',  USYNC_LOG_DIR . '/tracks.txt');
 if (!defined('USYNC_TIMEOUT'))      define('USYNC_TIMEOUT', 30);
 
+/**
+ * Длина корректного ISRC — 12 символов (пример: RUA1D2574249).
+ * В ups и в logs/tracks.txt есть обрезанные значения ('R', 'RU', 'RUA1D2378'…) — следы
+ * посимвольного ввода, а не выгрузок: в самих выгрузках все ISRC по 12 символов.
+ * Такие значения не принимаем: ни в upsound не создаём, ни в ups не дописываем.
+ */
+define('USYNC_ISRC_LENGTH', 12);
+
+function usync_valid_isrc($isrc)
+{
+    return strlen(trim($isrc)) === USYNC_ISRC_LENGTH;
+}
+
 # Таблицы и реквизиты БД upsound
 define('USYNC_UPSOUND_ARTIST',      10869); # Artist
 define('USYNC_UPSOUND_ISRC',          291); # ISRC
@@ -140,11 +153,19 @@ function usync_no_token($db)
 /**
  * Режим проверки: изменяющие запросы (_m_new, _m_set) не отправляются, файлы списков
  * не дополняются. Чтение выполняется — иначе в логе не видно, что именно будет дописано.
+ * Скрипты загрузки в этом режиме дополнительно не шлют импорт и не отмечают файл обработанным.
+ *
+ * Порядок: переменная окружения USYNC_DRY_RUN, затем ключ dry_run в upsound_sync.config.php
+ * (для запуска по крону, где переменную окружения задать негде).
  */
 function usync_dry_run()
 {
     $env = getenv('USYNC_DRY_RUN');
-    return ($env !== false && $env !== '' && $env !== '0');
+    if ($env !== false && $env !== '') {
+        return $env !== '0';
+    }
+    $config = usync_config();
+    return !empty($config['dry_run']);
 }
 
 # ################################ Транспорт ################################
@@ -577,11 +598,29 @@ function usync_sync(array $tracks, $logger = null)
         'tracks_failed'   => 0,
         'tracks_missing'  => 0, # импорт статистики ещё не завёл запись в ups
         'tracks_known'    => 0,
+        'tracks_invalid'  => 0, # ISRC не той длины — не принимаем
     );
 
     if (usync_dry_run()) {
-        usync_log($logger, 'Синхронизация в режиме проверки (USYNC_DRY_RUN): изменяющие запросы не отправляются');
+        usync_log($logger, 'Синхронизация в режиме проверки: изменяющие запросы не отправляются');
     }
+
+    # Отсеиваем некорректные ISRC до всего остального, чтобы по ним не заводились
+    # ни артисты, ни записи треков.
+    $rejected = array();
+    foreach ($tracks as $isrc => $track) {
+        if (!usync_valid_isrc($isrc)) {
+            $rejected[] = $isrc;
+            unset($tracks[$isrc]);
+        }
+    }
+    if (count($rejected)) {
+        $stats['tracks_invalid'] = count($rejected);
+        $shown = array_slice($rejected, 0, 10);
+        usync_log($logger, 'Синхронизация: отброшено ISRC неверной длины — ' . count($rejected)
+            . ' (' . implode(', ', $shown) . (count($rejected) > count($shown) ? ', …' : '') . ')');
+    }
+
     if (!count($tracks)) {
         usync_log($logger, 'Синхронизация: треков для проверки нет');
         return $stats;
