@@ -1,6 +1,12 @@
 <?php
 logIt(" Check files");
 
+// Папка для файлов, полученных по SFTP
+$ftp_dir = __DIR__ . '/ftp';
+if (!is_dir($ftp_dir)) {
+    mkdir($ftp_dir, 0775, true);
+}
+
 // === НОВЫЙ БЛОК: Файл для уникальных треков ===
 $unique_file = __DIR__ . '/unique_tracks_' . date('Y-m-d') . '.csv';
 $existing_tracks = [];
@@ -46,6 +52,9 @@ $i = $j = 0;
 
 // === НОВЫЙ БЛОК: Буфер для новых уникальных треков ===
 $new_unique_tracks = [];
+
+// === Все треки обработанных файлов для синхронизации с БД (issue #35) ===
+$all_tracks = [];
 
 while (false != ($file = readdir($handle))){
     if(strpos($file, "spd_upsound_") !== false){
@@ -94,6 +103,19 @@ while (false != ($file = readdir($handle))){
                         // Проверяем уникальность по ISRC
                         if (!empty($isrc) && !isset($existing_tracks[$isrc]) && !isset($new_unique_tracks[$isrc])) {
                             $new_unique_tracks[$isrc] = [
+                                'isrc' => $isrc,
+                                'title' => $title,
+                                'artist' => $artist,
+                                'album' => $album,
+                                'upc' => $upc
+                            ];
+                        }
+
+                        // === Треки для синхронизации с БД (issue #35) ===
+                        // Собираем независимо от дневного файла unique_tracks_*.csv:
+                        // сверка идёт со списками logs/artists.txt и logs/tracks.txt
+                        if (!empty($isrc) && !isset($all_tracks[$isrc])) {
+                            $all_tracks[$isrc] = [
                                 'isrc' => $isrc,
                                 'title' => $title,
                                 'artist' => $artist,
@@ -196,6 +218,10 @@ if (!empty($new_unique_tracks)) {
 } else {
     logIt("  Новых уникальных треков не найдено");
 }
+
+// === Синхронизация артистов и треков с БД upsound и ups (issue #35) ===
+require_once __DIR__ . '/upsound_sync.php';
+usync_sync($all_tracks, 'logIt');
 
 logIt(" $i files found, $j imported");
 fclose($hu);
