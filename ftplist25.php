@@ -1,5 +1,21 @@
 <?php
+// Токены доступа и пароли — в upsound_sync.config.php (в .gitignore),
+// образец со всеми ключами — upsound_sync.config.sample.php.
+require_once __DIR__ . '/upsound_sync.php';
+
 logIt(" Check files");
+
+$ftp_server = usync_secret('sftp', 'host', '195.46.167.154');
+$username   = usync_secret('sftp', 'user', 'UpSound25');
+$password   = usync_secret('sftp', 'pass');
+if ($password === '') {
+    logIt("  Не задан пароль SFTP (USYNC_SFTP_PASS или upsound_sync.config.php)");
+    die("Не задан пароль SFTP\n");
+}
+if (usync_token('ups') === '') {
+    logIt("  Не задан токен ups (USYNC_TOKEN_UPS или upsound_sync.config.php)");
+    die("Не задан токен ups\n");
+}
 
 // Папка для файлов, полученных по SFTP
 $ftp_dir = __DIR__ . '/ftp';
@@ -33,11 +49,8 @@ else
     $uploaded = "";
 logIt("   uploaded ".$fstats['size']);
 
-$ftp_server = "195.46.167.154";
 $conn_id = ssh2_connect($ftp_server);
 logIt("  ssh2_connect $conn_id");
-$username = "UpSound25";
-$password = "xxx";
 if (!ssh2_auth_password($conn_id, $username, $password)) {
     logIt("  ssh2_auth failed");
     die('Не удалось аутентифицироваться');
@@ -94,11 +107,13 @@ while (false != ($file = readdir($handle))){
                         
                         // === НОВЫЙ БЛОК: Извлечение данных для уникального файла ===
                         // Формат: ISRC;Title;;Artist;Album Title;upc;
+                        // Колонки выгрузки: 0 track, 1 artist, 2 album_id, 3 album,
+                        // 4 country, 5 platform, 6 isrc, 7 upc, 8 streams.
                         $isrc   = isset($parts[6]) ? trim($parts[6]) : '';
-                        $title  = isset($parts[8]) ? trim($parts[8]) : '';
-                        $artist = isset($parts[5]) ? trim($parts[5]) : '';
-                        $album  = isset($parts[4]) ? trim($parts[4]) : '';
-                        $upc    = isset($parts[3]) ? trim($parts[3]) : ''; // UPC обычно в 4-й колонке
+                        $title  = isset($parts[0]) ? trim($parts[0]) : '';
+                        $artist = isset($parts[1]) ? trim($parts[1]) : '';
+                        $album  = isset($parts[3]) ? trim($parts[3]) : '';
+                        $upc    = isset($parts[7]) ? trim($parts[7]) : '';
                         
                         // Проверяем уникальность по ISRC
                         if (!empty($isrc) && !isset($existing_tracks[$isrc]) && !isset($new_unique_tracks[$isrc])) {
@@ -149,8 +164,8 @@ while (false != ($file = readdir($handle))){
                 'autoParent' => '165906636',
                 'createParent' => '1',
                 'bki_file' => $cFile,
-                '_xsrf' => 'TCAFK2135340y',
-                'token' => 'TCAFK2135340y'
+                '_xsrf' => usync_xsrf('ups'),
+                'token' => usync_token('ups')
             );
             
             curl_setopt($ch, CURLOPT_POST, true);
@@ -220,7 +235,6 @@ if (!empty($new_unique_tracks)) {
 }
 
 // === Синхронизация артистов и треков с БД upsound и ups (issue #35) ===
-require_once __DIR__ . '/upsound_sync.php';
 usync_sync($all_tracks, 'logIt');
 
 logIt(" $i files found, $j imported");
