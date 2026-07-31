@@ -55,37 +55,10 @@ define('USYNC_UPS_ISRC_UPC',   165912544); # upc, NUMBER
 define('USYNC_UPS_ISRC_ID',    180202603); # ID, SHORT — сюда пишем ID трека из upsound
 
 /**
- * Токен доступа к API конкретной БД.
- * Порядок: переменная окружения USYNC_TOKEN_UPSOUND / USYNC_TOKEN_UPS,
- * затем файл upsound_sync.config.php (не хранится в репозитории), затем токен по умолчанию.
+ * Конфигурация: токены доступа к API и пароли FTP/SFTP.
+ * Файл upsound_sync.config.php в .gitignore и в репозиторий не попадает,
+ * образец со всеми ключами — upsound_sync.config.sample.php.
  */
-function usync_token($db)
-{
-    $env = getenv('USYNC_TOKEN_' . strtoupper($db));
-    if ($env !== false && $env !== '') {
-        return $env;
-    }
-    $config = usync_config();
-    if (isset($config['tokens'][$db])) {
-        return $config['tokens'][$db];
-    }
-    return 'TCAFK2135340y';
-}
-
-/** Токен XSRF: команды _m_* без него отвечают 403. По умолчанию совпадает с токеном доступа. */
-function usync_xsrf($db)
-{
-    $env = getenv('USYNC_XSRF_' . strtoupper($db));
-    if ($env !== false && $env !== '') {
-        return $env;
-    }
-    $config = usync_config();
-    if (isset($config['xsrf'][$db])) {
-        return $config['xsrf'][$db];
-    }
-    return usync_token($db);
-}
-
 function usync_config()
 {
     static $config = null;
@@ -97,6 +70,71 @@ function usync_config()
         }
     }
     return $config;
+}
+
+/**
+ * Значение из секции конфигурации ('ftp', 'sftp').
+ * Порядок: переменная окружения USYNC_{СЕКЦИЯ}_{КЛЮЧ} (например USYNC_FTP_PASS),
+ * затем upsound_sync.config.php, затем $default.
+ */
+function usync_secret($section, $key, $default = '')
+{
+    $env = getenv('USYNC_' . strtoupper($section) . '_' . strtoupper($key));
+    if ($env !== false && $env !== '') {
+        return $env;
+    }
+    $config = usync_config();
+    if (isset($config[$section][$key]) && $config[$section][$key] !== '') {
+        return $config[$section][$key];
+    }
+    return $default;
+}
+
+/**
+ * Токен доступа к API конкретной БД.
+ * Порядок: переменная окружения USYNC_TOKEN_UPSOUND / USYNC_TOKEN_UPS,
+ * затем секция tokens в upsound_sync.config.php. Пустая строка — токен не задан.
+ */
+function usync_token($db)
+{
+    $env = getenv('USYNC_TOKEN_' . strtoupper($db));
+    if ($env !== false && $env !== '') {
+        return $env;
+    }
+    $config = usync_config();
+    if (isset($config['tokens'][$db]) && $config['tokens'][$db] !== '') {
+        return $config['tokens'][$db];
+    }
+    return '';
+}
+
+/**
+ * Токен XSRF: команды _m_* без него отвечают 403. В конфигурации не хранится —
+ * база отдаёт его по токену доступа, поэтому запрашиваем на лету и держим до конца работы
+ * скрипта в $GLOBALS['usync_xsrf'] (тот же ключ позволяет подставить значение в тестах).
+ */
+function usync_xsrf($db)
+{
+    if (isset($GLOBALS['usync_xsrf'][$db]) && $GLOBALS['usync_xsrf'][$db] !== '') {
+        return $GLOBALS['usync_xsrf'][$db];
+    }
+    $token = usync_token($db);
+    if ($token === '') {
+        return '';
+    }
+    $result = usync_decode(usync_http_get(USYNC_BASE_URL . "/$db/xsrf?JSON", $token));
+    if (isset($result['error']) || !isset($result['_xsrf']) || $result['_xsrf'] === '') {
+        return '';
+    }
+    $GLOBALS['usync_xsrf'][$db] = $result['_xsrf'];
+    return $result['_xsrf'];
+}
+
+/** Понятное сообщение, если доступ к БД не настроен. */
+function usync_no_token($db)
+{
+    return 'Не задан токен доступа к БД ' . $db
+        . ' (USYNC_TOKEN_' . strtoupper($db) . ' или upsound_sync.config.php)';
 }
 
 /**
@@ -179,8 +217,16 @@ function usync_decode($response)
  */
 function usync_api($db, $cmd, $id, array $params)
 {
-    $params['token'] = usync_token($db);
-    $params['_xsrf'] = usync_xsrf($db);
+    $token = usync_token($db);
+    if ($token === '') {
+        return array('error' => usync_no_token($db));
+    }
+    $xsrf = usync_xsrf($db);
+    if ($xsrf === '') {
+        return array('error' => "Не удалось получить _xsrf для БД $db");
+    }
+    $params['token'] = $token;
+    $params['_xsrf'] = $xsrf;
     $url = USYNC_BASE_URL . "/$db/$cmd/$id?JSON";
 
     return usync_decode(usync_http_post($url, $params));
@@ -197,9 +243,13 @@ function usync_find($db, $table, $value)
     if ($value === '') {
         return array('error' => 'Пустое значение записи');
     }
+    $token = usync_token($db);
+    if ($token === '') {
+        return array('error' => usync_no_token($db));
+    }
     $url = USYNC_BASE_URL . "/$db/object/$table?JSON&LIMIT=2&F_$table=" . rawurlencode($value);
 
-    $result = usync_decode(usync_http_get($url, usync_token($db)));
+    $result = usync_decode(usync_http_get($url, $token));
     if (isset($result['error'])) {
         return $result;
     }

@@ -1,5 +1,21 @@
 <?php
+// Токены доступа и пароли — в upsound_sync.config.php (в .gitignore),
+// образец со всеми ключами — upsound_sync.config.sample.php.
+require_once __DIR__ . '/upsound_sync.php';
+
 logIt(" Check files");
+
+$ftp_server = usync_secret('sftp', 'host', '195.46.167.154');
+$username   = usync_secret('sftp', 'user', 'UpSound25');
+$password   = usync_secret('sftp', 'pass');
+if ($password === '') {
+    logIt("  Не задан пароль SFTP (USYNC_SFTP_PASS или upsound_sync.config.php)");
+    die("Не задан пароль SFTP\n");
+}
+if (usync_token('ups') === '') {
+    logIt("  Не задан токен ups (USYNC_TOKEN_UPS или upsound_sync.config.php)");
+    die("Не задан токен ups\n");
+}
 
 // Папка для файлов, полученных по SFTP
 $ftp_dir = __DIR__ . '/ftp';
@@ -33,11 +49,8 @@ else
     $uploaded = "";
 logIt("   uploaded ".$fstats['size']);
 
-$ftp_server = "195.46.167.154";
 $conn_id = ssh2_connect($ftp_server);
 logIt("  ssh2_connect $conn_id");
-$username = "UpSound25";
-$password = "xxx";
 if (!ssh2_auth_password($conn_id, $username, $password)) {
     logIt("  ssh2_auth failed");
     die('Не удалось аутентифицироваться');
@@ -151,8 +164,8 @@ while (false != ($file = readdir($handle))){
                 'autoParent' => '165906636',
                 'createParent' => '1',
                 'bki_file' => $cFile,
-                '_xsrf' => 'TCAFK2135340y',
-                'token' => 'TCAFK2135340y'
+                '_xsrf' => usync_xsrf('ups'),
+                'token' => usync_token('ups')
             );
             
             curl_setopt($ch, CURLOPT_POST, true);
@@ -222,7 +235,6 @@ if (!empty($new_unique_tracks)) {
 }
 
 // === Синхронизация артистов и треков с БД upsound и ups (issue #35) ===
-require_once __DIR__ . '/upsound_sync.php';
 usync_sync($all_tracks, 'logIt');
 
 logIt(" $i files found, $j imported");

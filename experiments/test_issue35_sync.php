@@ -16,7 +16,13 @@ $tmp = sys_get_temp_dir() . '/usync_test_' . getmypid();
 
 define('USYNC_ARTISTS_FILE', $tmp . '/artists.txt');
 define('USYNC_TRACKS_FILE',  $tmp . '/tracks.txt');
+putenv('USYNC_TOKEN_UPSOUND=test-token-upsound');
+putenv('USYNC_TOKEN_UPS=test-token-ups');
 require_once __DIR__ . '/../upsound_sync.php';
+
+# _xsrf запрашивается у базы на лету; подставляем готовое значение, чтобы не считать
+# лишний запрос в каждом разделе. Отдельно это поведение проверяет раздел 10.
+$GLOBALS['usync_xsrf'] = array('upsound' => 'xsrf-upsound', 'ups' => 'xsrf-ups');
 
 $failed = 0;
 $calls  = array();
@@ -71,7 +77,12 @@ $GLOBALS['usync_http_handler'] = function ($url, array $post) use (&$calls, &$re
 };
 
 $GLOBALS['usync_http_get_handler'] = function ($url, $token) use (&$calls, &$records) {
-    $calls[] = array('url' => $url, 'get' => true);
+    $calls[] = array('url' => $url, 'get' => true, 'token' => $token);
+    if (preg_match('#/([a-z]+)/xsrf\?JSON$#', $url, $m)) {
+        return array('body' => json_encode(array('_xsrf' => 'xsrf-' . $m[1], 'token' => $token,
+                                                 'user' => 'ftp', 'role' => 'ftp')),
+                     'error' => '', 'code' => 200);
+    }
     if (preg_match('#/([a-z]+)/object/(\d+)\?JSON&LIMIT=2&F_\d+=(.*)$#', $url, $m)) {
         $key = $m[1] . ':' . $m[2] . ':' . rawurldecode($m[3]);
         if (isset($records[$key])) {
@@ -243,6 +254,49 @@ usync_sync(array(
     'AEA0D2138704' => array('isrc' => 'AEA0D2138704', 'title' => '', 'artist' => '', 'album' => '', 'upc' => ''),
 ));
 assertEquals("AEA0D2138701\nAEA0D2138704\n", file_get_contents(USYNC_TRACKS_FILE), 'дописано с переносом LF');
+
+echo "\n10. _xsrf запрашивается у базы на лету и переиспользуется\n";
+$calls = array();
+unset($GLOBALS['usync_xsrf']);
+assertEquals('xsrf-ups', usync_xsrf('ups'), '_xsrf получен от самой базы по токену доступа');
+assertEquals('https://upsound.ideav.online/ups/xsrf?JSON', $calls[0]['url'], 'запрошен эндпоинт нужной базы');
+assertEquals('test-token-ups', $calls[0]['token'], 'запрос авторизован токеном этой базы');
+assertEquals(1, count($calls), 'выполнен один запрос');
+usync_xsrf('ups');
+assertEquals(1, count($calls), 'повторно не запрашивается — значение держится до конца работы скрипта');
+
+$calls = array();
+$records['ups:165906636:RUA1B2500007'] = record(9007, 'RUA1B2500007');
+usync_sync(array(
+    'RUA1B2500007' => array('isrc' => 'RUA1B2500007', 'title' => 'Седьмой трек',
+                            'artist' => '', 'album' => '', 'upc' => ''),
+));
+$set = $calls[count($calls) - 1];
+assertEquals('xsrf-ups', $set['post']['_xsrf'], 'полученный _xsrf уходит в команды изменения');
+assertEquals('test-token-ups', $set['post']['token'], 'токен доступа берётся из конфигурации');
+
+echo "\n11. Токен не задан: понятная ошибка вместо запроса с пустым токеном\n";
+$calls = array();
+putenv('USYNC_TOKEN_UPSOUND=');
+$result = usync_sync_artist('Артист без токена');
+assertEquals(true, isset($result['error']), 'синхронизация артиста возвращает ошибку');
+assertEquals('Не задан токен доступа к БД upsound (USYNC_TOKEN_UPSOUND или upsound_sync.config.php)',
+    $result['error'], 'в ошибке сказано, что и где задать');
+assertEquals(0, count($calls), 'запрос с пустым токеном не отправляется');
+putenv('USYNC_TOKEN_UPSOUND=test-token-upsound');
+
+echo "\n12. В скриптах загрузки не осталось зашитых секретов\n";
+foreach (array('ftplist2025.php', 'ftplist25.php') as $script) {
+    $source = file_get_contents(dirname(__DIR__) . '/' . $script);
+    assertEquals(false, strpos($source, 'TCAFK2135340y') !== false, "$script: нет зашитого токена");
+    assertEquals(1, preg_match('/usync_token\(\'ups\'\)/', $source), "$script: токен берётся из конфигурации");
+    assertEquals(1, preg_match('/usync_xsrf\(\'ups\'\)/', $source), "$script: _xsrf запрашивается на лету");
+    assertEquals(1, preg_match('/usync_secret\(\'s?ftp\', \'pass\'\)/', $source), "$script: пароль берётся из конфигурации");
+}
+assertEquals(true, file_exists(dirname(__DIR__) . '/upsound_sync.config.sample.php'), 'образец конфигурации в репозитории');
+assertEquals(false, file_exists(dirname(__DIR__) . '/upsound_sync.config.php'), 'сам конфиг в репозиторий не попал');
+assertEquals(1, preg_match('/^upsound_sync\.config\.php$/m', file_get_contents(dirname(__DIR__) . '/.gitignore')),
+    'конфиг перечислен в .gitignore');
 
 array_map('unlink', glob($tmp . '/*'));
 @rmdir($tmp);
