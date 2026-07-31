@@ -419,7 +419,26 @@ assertEquals(1, $stats['tracks_synced'], 'трек синхронизирова�
 $created = array_filter($calls, function ($call) { return strpos($call['url'], '_m_new/308') !== false; });
 assertEquals(0, count($created), 'дубль в ups не заводится');
 
-echo "\n17. В скриптах загрузки не осталось зашитых секретов\n";
+echo "\n17. Одна склейка проверяется один раз, сколько бы у неё ни было треков\n";
+$calls = array();
+$records['ups:165906636:RUA1B2500014'] = record(9014, 'RUA1B2500014');
+$records['ups:165906636:RUA1B2500015'] = record(9015, 'RUA1B2500015');
+$records['ups:165906636:RUA1B2500016'] = record(9016, 'RUA1B2500016');
+$collab = 'дж сойер & demdiznuts';
+$stats = usync_sync(array(
+    'RUA1B2500014' => array('isrc' => 'RUA1B2500014', 'title' => 'Раз', 'artist' => $collab, 'album' => '', 'upc' => ''),
+    'RUA1B2500015' => array('isrc' => 'RUA1B2500015', 'title' => 'Два', 'artist' => $collab, 'album' => '', 'upc' => ''),
+    'RUA1B2500016' => array('isrc' => 'RUA1B2500016', 'title' => 'Три', 'artist' => $collab, 'album' => '', 'upc' => ''),
+));
+assertEquals(1, $stats['artists_collab'], 'склейка учтена один раз, а не по разу на трек');
+assertEquals(3, $stats['tracks_synced'], 'все три трека синхронизированы');
+$looked = array_filter($calls, function ($call) use ($collab) {
+    return strpos($call['url'], '/object/10869?') !== false
+        || strpos($call['url'], '/object/308?') !== false;
+});
+assertEquals(2, count($looked), 'поиск склейки выполнен ровно дважды: по разу на базу');
+
+echo "\n18. В скриптах загрузки не осталось зашитых секретов\n";
 foreach (array('ftplist2025.php', 'ftplist25.php') as $script) {
     $source = file_get_contents(dirname(__DIR__) . '/' . $script);
     assertEquals(false, strpos($source, 'TCAFK2135340y') !== false, "$script: нет зашитого токена");

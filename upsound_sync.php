@@ -716,7 +716,9 @@ function usync_sync(array $tracks, $logger = null)
     # Пункты 1 и 2: артисты, которых ещё нет в списке logs/artists.txt
     foreach ($tracks as $track) {
         $name = isset($track['artist']) ? trim($track['artist']) : '';
-        if ($name === '' || isset($known_artists[$name]) || isset($artist_ids[$name])) {
+        # array_key_exists, а не isset: у склейки соавторов значение null, и с isset()
+        # она проверялась бы заново на каждом её треке — лишние запросы и раздутый счётчик.
+        if ($name === '' || isset($known_artists[$name]) || array_key_exists($name, $artist_ids)) {
             continue;
         }
         $result = usync_sync_artist($name, $logger);
