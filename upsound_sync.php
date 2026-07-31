@@ -254,15 +254,30 @@ function usync_api($db, $cmd, $id, array $params)
 }
 
 /**
+ * Значение с апострофом или обратным слэшем в фильтр F_ подставлять нельзя: ядро кладёт
+ * его в SQL без экранирования, и запрос падает с синтаксической ошибкой. Экранирование
+ * на нашей стороне не помогает — проверены и \' и '' (живой API, 31.07.2026,
+ * имя "Yan Pol' Musique"). Такие значения не ищем.
+ */
+function usync_searchable($value)
+{
+    return strpos($value, "'") === false && strpos($value, "\\") === false;
+}
+
+/**
  * Найти запись по значению первой колонки. Фильтр F_{таблица} сравнивает точно
  * (значение по префиксу ничего не находит — проверено на живом API).
  * Возвращает array('id' => int, 'reqs' => array) — id=0, если записи нет.
+ * Для значений, которые нельзя искать, id=0 и признак not_searchable.
  */
 function usync_find($db, $table, $value)
 {
     $value = trim($value);
     if ($value === '') {
         return array('error' => 'Пустое значение записи');
+    }
+    if (!usync_searchable($value)) {
+        return array('id' => 0, 'reqs' => array(), 'not_searchable' => true);
     }
     $token = usync_token($db);
     if ($token === '') {
@@ -375,6 +390,11 @@ function usync_ups_album($name)
     if ($found['id']) {
         return array('id' => $found['id'], 'existed' => true);
     }
+    if (!empty($found['not_searchable'])) {
+        # Проверить, есть ли такой альбом, нечем, а справочник не уникален —
+        # создание вслепую завело бы дубль. Оставляем реквизит незаполненным.
+        return array('id' => 0, 'existed' => false, 'not_searchable' => true);
+    }
     if (usync_dry_run()) {
         return array('id' => 0, 'existed' => false, 'dry_run' => true);
     }
@@ -454,6 +474,18 @@ function usync_append_list($file, $value)
     return true;
 }
 
+/**
+ * Как записать состояние записи в лог. В режиме проверки ничего не создаётся,
+ * поэтому «создан» там было бы неправдой.
+ */
+function usync_state(array $result)
+{
+    if (!empty($result['dry_run']) && empty($result['id'])) {
+        return 'будет создан';
+    }
+    return !empty($result['existed']) ? 'уже был' : 'создан';
+}
+
 function usync_log($logger, $message)
 {
     if (is_callable($logger)) {
@@ -483,9 +515,8 @@ function usync_sync_artist($name, $logger = null)
         return array('error' => $ups['error']);
     }
 
-    usync_log($logger, "Артист '$name': upsound ID=" . $upsound['id']
-        . ($upsound['existed'] ? ' (уже был)' : ' (создан)')
-        . ', ups ID=' . $ups['id'] . ($ups['existed'] ? ' (уже был)' : ' (создан)'));
+    usync_log($logger, "Артист '$name': upsound ID=" . $upsound['id'] . ' (' . usync_state($upsound) . ')'
+        . ', ups ID=' . $ups['id'] . ' (' . usync_state($ups) . ')');
 
     return array('upsound' => $upsound['id'], 'ups' => $ups['id']);
 }
@@ -560,6 +591,9 @@ function usync_sync_track($isrc, array $track, $artist_ids, $logger = null)
         if ($album_ref['id']) {
             $updates['t' . USYNC_UPS_ISRC_ALBUM] = $album_ref['id'];
             $filled[] = 'Album Title';
+        }
+        elseif (!empty($album_ref['not_searchable'])) {
+            usync_log($logger, "Трек $isrc: альбом '$album' пропущен — апостроф в названии, поиск по нему ядро не выполняет");
         }
     }
     # ID из upsound — то, ради чего синхронизация и делается: проставляем и при расхождении.
@@ -686,9 +720,10 @@ function usync_sync(array $tracks, $logger = null)
         $stats['tracks_synced']++;
     }
 
-    usync_log($logger, 'Синхронизация: артистов создано ' . $stats['artists_new']
+    usync_log($logger, 'Синхронизация: артистов ' . (usync_dry_run() ? 'будет создано ' : 'создано ')
+        . $stats['artists_new']
         . ', ошибок ' . $stats['artists_failed']
-        . '; треков дополнено ' . $stats['tracks_synced']
+        . '; треков ' . (usync_dry_run() ? 'будет дополнено ' : 'дополнено ') . $stats['tracks_synced']
         . ', ошибок ' . $stats['tracks_failed']
         . ', нет в ups ' . $stats['tracks_missing']
         . ', уже было ' . $stats['tracks_known']);
