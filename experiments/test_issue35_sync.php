@@ -366,7 +366,60 @@ assertEquals('уже был', usync_state(array('id' => 77, 'existed' => true, '
     'найденная запись — «уже был» и в режиме проверки');
 assertEquals('создан', usync_state(array('id' => 77, 'existed' => false)), 'в боевом режиме — «создан»');
 
-echo "\n16. В скриптах загрузки не осталось зашитых секретов\n";
+echo "\n16. Склейки соавторов новых записей не заводят\n";
+assertEquals(true,  usync_is_collab('LEVU & Ксюша Фавия'), 'амперсанд — склейка');
+assertEquals(true,  usync_is_collab('AMiD feat. T1MC'), 'feat. — склейка');
+assertEquals(true,  usync_is_collab('1996, D.masta, Смоки Мо'), 'перечисление через запятую — склейка');
+assertEquals(false, usync_is_collab('COLDLEEN'), 'обычное имя — не склейка');
+assertEquals(false, usync_is_collab('Маэстро Риф'), 'имя из двух слов — не склейка');
+
+# новой склейки нет ни в одной базе: не заводим, трек синхронизируем без ссылки
+$calls = array();
+$records['ups:165906636:RUA1B2500011'] = record(9011, 'RUA1B2500011');
+$stats = usync_sync(array(
+    'RUA1B2500011' => array('isrc' => 'RUA1B2500011', 'title' => 'Дуэт',
+                            'artist' => 'Новый & Тоже Новый', 'album' => '', 'upc' => ''),
+));
+assertEquals(1, $stats['artists_collab'], 'склейка учтена отдельным счётчиком');
+assertEquals(0, $stats['artists_new'], 'артист не создан');
+assertEquals(1, $stats['tracks_synced'], 'трек всё равно синхронизирован');
+$created = array_filter($calls, function ($call) { return strpos($call['url'], '_m_new/10869') !== false
+                                                      || strpos($call['url'], '_m_new/308') !== false; });
+assertEquals(0, count($created), 'ни в upsound, ни в ups запись не заводится');
+$set = $calls[count($calls) - 1];
+assertEquals(false, isset($set['post']['t165912539']), 'ссылка на артиста у трека не проставляется');
+assertEquals(false, strpos(file_get_contents(USYNC_ARTISTS_FILE), 'Новый & Тоже Новый') !== false,
+    'склейка не дописана в logs/artists.txt');
+
+# склейка, которая уже есть в обеих базах: ссылку проставляем, связь не рвём
+$calls = array();
+$records['upsound:10869:Дуэт & Дуэт'] = record(7001, 'Дуэт & Дуэт');
+$records['ups:308:Дуэт & Дуэт']       = record(7002, 'Дуэт & Дуэт');
+$records['ups:165906636:RUA1B2500012'] = record(9012, 'RUA1B2500012');
+$stats = usync_sync(array(
+    'RUA1B2500012' => array('isrc' => 'RUA1B2500012', 'title' => 'Известный дуэт',
+                            'artist' => 'Дуэт & Дуэт', 'album' => '', 'upc' => ''),
+));
+assertEquals(0, $stats['artists_collab'], 'существующая склейка пропуском не считается');
+$set = $calls[count($calls) - 1];
+assertEquals(7002, $set['post']['t165912539'], 'ссылка на существующую запись проставлена');
+
+# склейка, которая в ups лежит с экранированной запятой, поиском не находится:
+# её просто пропускаем, а трек синхронизируем без ссылки
+$calls = array();
+$records['upsound:10869:Son, Fire!']   = record(7010, 'Son, Fire!');
+$records['ups:308:Son\\, Fire!']       = record(7011, 'Son\\, Fire!');
+$records['ups:165906636:RUA1B2500013'] = record(9013, 'RUA1B2500013');
+$stats = usync_sync(array(
+    'RUA1B2500013' => array('isrc' => 'RUA1B2500013', 'title' => 'Группа с запятой',
+                            'artist' => 'Son, Fire!', 'album' => '', 'upc' => ''),
+));
+assertEquals(1, $stats['artists_collab'], 'склейка пропущена');
+assertEquals(1, $stats['tracks_synced'], 'трек синхронизирован без ссылки на артиста');
+$created = array_filter($calls, function ($call) { return strpos($call['url'], '_m_new/308') !== false; });
+assertEquals(0, count($created), 'дубль в ups не заводится');
+
+echo "\n17. В скриптах загрузки не осталось зашитых секретов\n";
 foreach (array('ftplist2025.php', 'ftplist25.php') as $script) {
     $source = file_get_contents(dirname(__DIR__) . '/' . $script);
     assertEquals(false, strpos($source, 'TCAFK2135340y') !== false, "$script: нет зашитого токена");
