@@ -94,11 +94,13 @@ while (false != ($file = readdir($handle))){
                         
                         // === НОВЫЙ БЛОК: Извлечение данных для уникального файла ===
                         // Формат: ISRC;Title;;Artist;Album Title;upc;
+                        // Колонки выгрузки: 0 track, 1 artist, 2 album_id, 3 album,
+                        // 4 country, 5 platform, 6 isrc, 7 upc, 8 streams.
                         $isrc   = isset($parts[6]) ? trim($parts[6]) : '';
-                        $title  = isset($parts[8]) ? trim($parts[8]) : '';
-                        $artist = isset($parts[5]) ? trim($parts[5]) : '';
-                        $album  = isset($parts[4]) ? trim($parts[4]) : '';
-                        $upc    = isset($parts[3]) ? trim($parts[3]) : ''; // UPC обычно в 4-й колонке
+                        $title  = isset($parts[0]) ? trim($parts[0]) : '';
+                        $artist = isset($parts[1]) ? trim($parts[1]) : '';
+                        $album  = isset($parts[3]) ? trim($parts[3]) : '';
+                        $upc    = isset($parts[7]) ? trim($parts[7]) : '';
                         
                         // Проверяем уникальность по ISRC
                         if (!empty($isrc) && !isset($existing_tracks[$isrc]) && !isset($new_unique_tracks[$isrc])) {

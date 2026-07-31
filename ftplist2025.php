@@ -74,11 +74,15 @@
                         
                         // === НОВЫЙ БЛОК: Извлечение данных для уникального файла ===
                         // Формат: ISRC;Title;;Artist;Album Title;upc;
+                        // Колонки выгрузки: track, artist, album_id, album, country,
+                        // platform, isrc, upc, streams. Выше из строки вырезан album_id,
+                        // поэтому после explode: 0 track, 1 artist, 2 album, 3 country,
+                        // 4 platform, 5 isrc, 6 upc, 7 streams.
                         $isrc    = isset($tmp[5]) ? trim($tmp[5]) : '';
-                        $title   = isset($tmp[7]) ? trim($tmp[7]) : '';
-                        $artist  = isset($tmp[4]) ? trim($tmp[4]) : '';
-                        $album   = isset($tmp[3]) ? trim($tmp[3]) : '';
-                        $upc     = isset($tmp[2]) ? trim($tmp[2]) : '';
+                        $title   = isset($tmp[0]) ? trim($tmp[0]) : '';
+                        $artist  = isset($tmp[1]) ? trim($tmp[1]) : '';
+                        $album   = isset($tmp[2]) ? trim($tmp[2]) : '';
+                        $upc     = isset($tmp[6]) ? trim($tmp[6]) : '';
                         
                         // Проверяем уникальность по ISRC
                         if (!empty($isrc) && !isset($existing_tracks[$isrc]) && !isset($new_unique_tracks[$isrc])) {
