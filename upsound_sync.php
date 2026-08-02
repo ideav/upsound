@@ -404,17 +404,37 @@ function usync_ups_album($name)
 # ############################## Файлы списков ##############################
 
 /**
+ * Сообщить о беде со списком — ОДИН раз на файл за запуск, иначе строка повторилась бы
+ * на каждом артисте и каждом треке. Ключ в $GLOBALS, чтобы тесты могли начать с чистого листа.
+ */
+function usync_list_problem($file, $message, $logger)
+{
+    if (isset($GLOBALS['usync_list_warned'][$file])) {
+        return;
+    }
+    $GLOBALS['usync_list_warned'][$file] = true;
+    usync_log($logger, 'Список ' . basename($file) . ': ' . $message . ' (' . $file . ')');
+}
+
+/**
  * Прочитать список в виде array(значение => true).
  * Файлы ведутся вручную, поэтому снимаем BOM, переносы CRLF и краевые пробелы.
+ *
+ * Нечитаемый файл молчать не должен: список вернётся пустым, вся выгрузка сойдёт за новую,
+ * и синхронизация пойдёт по API за тем, что давно сделано.
  */
-function usync_read_list($file)
+function usync_read_list($file, $logger = null)
 {
     $list = array();
     if (!file_exists($file)) {
         return $list;
     }
-    $lines = file($file, FILE_IGNORE_NEW_LINES);
+    # Проверяем доступность заранее: file() на каталоге возвращает не false, а пустой массив
+    # с Notice, и нечитаемый список сошёл бы за пустой.
+    $lines = (is_file($file) && is_readable($file)) ? @file($file, FILE_IGNORE_NEW_LINES) : false;
     if ($lines === false) {
+        usync_list_problem($file, 'файл есть, а прочитать не удалось — проверьте права на чтение;'
+            . ' пока список пуст, всё содержимое выгрузки считается новым', $logger);
         return $list;
     }
     $first = true;
@@ -436,15 +456,21 @@ function usync_read_list($file)
  * Перенос строки берём такой же, какой уже в файле (примеры в issue #35 — CRLF),
  * и, если файл не заканчивается переносом, сначала добавляем его,
  * иначе новое значение приклеится к последней строке.
+ *
+ * Возвращает false, если дописать не удалось. Раньше отказ был молчаливым, и прогон
+ * 02.08.2026 отчитался «артистов создано 125, ошибок 0», не записав в logs/ ни одного имени
+ * (прав на каталог не было). Список — единственное, что удерживает следующий запуск от
+ * повторного прохода по API, поэтому о провале сообщаем в лог.
  */
-function usync_append_list($file, $value)
+function usync_append_list($file, $value, $logger = null)
 {
     if (usync_dry_run()) {
         return true;
     }
     $dir = dirname($file);
-    if (!is_dir($dir)) {
-        @mkdir($dir, 0775, true);
+    if (!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir)) {
+        usync_list_problem($file, 'не удалось создать каталог — проверьте права', $logger);
+        return false;
     }
 
     $eol    = "\r\n";
@@ -467,10 +493,18 @@ function usync_append_list($file, $value)
 
     $h = @fopen($file, 'a');
     if (!$h) {
+        usync_list_problem($file, 'не удалось открыть на дозапись — проверьте права на файл'
+            . ' и каталог; синхронизация продолжится, но следующий запуск проверит эти записи заново',
+            $logger);
         return false;
     }
-    fwrite($h, $prefix . $value . $eol);
+    $written = fwrite($h, $prefix . $value . $eol);
     fclose($h);
+    if ($written === false) {
+        usync_list_problem($file, 'не удалось записать значение — проверьте место на диске и квоту',
+            $logger);
+        return false;
+    }
     return true;
 }
 
@@ -682,6 +716,7 @@ function usync_sync(array $tracks, $logger = null)
         'tracks_missing'  => 0, # импорт статистики ещё не завёл запись в ups
         'tracks_known'    => 0,
         'tracks_invalid'  => 0, # ISRC не той длины — не принимаем
+        'unlisted'        => 0, # синхронизировано, но в список не дописано (нет прав на файл)
     );
 
     if (usync_dry_run()) {
@@ -709,8 +744,8 @@ function usync_sync(array $tracks, $logger = null)
         return $stats;
     }
 
-    $known_artists = usync_read_list(USYNC_ARTISTS_FILE);
-    $known_tracks  = usync_read_list(USYNC_TRACKS_FILE);
+    $known_artists = usync_read_list(USYNC_ARTISTS_FILE, $logger);
+    $known_tracks  = usync_read_list(USYNC_TRACKS_FILE, $logger);
     $artist_ids    = array(); # имя => array('upsound' => id, 'ups' => id)
 
     # Пункты 1 и 2: артисты, которых ещё нет в списке logs/artists.txt
@@ -735,7 +770,9 @@ function usync_sync(array $tracks, $logger = null)
         }
         $artist_ids[$name] = $result;
         $known_artists[$name] = true;
-        usync_append_list(USYNC_ARTISTS_FILE, $name);
+        if (!usync_append_list(USYNC_ARTISTS_FILE, $name, $logger)) {
+            $stats['unlisted']++;
+        }
         $stats['artists_new']++;
     }
 
@@ -782,7 +819,9 @@ function usync_sync(array $tracks, $logger = null)
             continue;
         }
         $known_tracks[$isrc] = true;
-        usync_append_list(USYNC_TRACKS_FILE, $isrc);
+        if (!usync_append_list(USYNC_TRACKS_FILE, $isrc, $logger)) {
+            $stats['unlisted']++;
+        }
         $stats['tracks_synced']++;
     }
 
@@ -794,6 +833,13 @@ function usync_sync(array $tracks, $logger = null)
         . ', ошибок ' . $stats['tracks_failed']
         . ', нет в ups ' . $stats['tracks_missing']
         . ', уже было ' . $stats['tracks_known']);
+
+    # Записи в базах на месте, а память о них — нет: без этой строки следующий запуск
+    # молча пройдёт по API за тем же самым, а лог снова отчитается «создано».
+    if ($stats['unlisted']) {
+        usync_log($logger, 'Синхронизация: в списки не дописано значений — ' . $stats['unlisted']
+            . '; следующий запуск проверит их заново');
+    }
 
     return $stats;
 }
