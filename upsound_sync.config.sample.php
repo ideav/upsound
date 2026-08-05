@@ -28,14 +28,14 @@ return array(
 
     // FTP, откуда ftplist2025.php забирает report_5273_*.gz
     'ftp' => array(
-        'host' => 'ftp.maggregator.com',   // USYNC_FTP_HOST
+        'host' => 'ftp.com',   // USYNC_FTP_HOST
         'user' => 'upsound',               // USYNC_FTP_USER
         'pass' => '',                      // USYNC_FTP_PASS
     ),
 
     // SFTP, откуда ftplist25.php забирает upsound_daily/spd_upsound_*
     'sftp' => array(
-        'host' => '195.46.167.154',        // USYNC_SFTP_HOST
+        'host' => '195.46.16.1',        // USYNC_SFTP_HOST
         'user' => 'UpSound25',             // USYNC_SFTP_USER
         'pass' => '',                      // USYNC_SFTP_PASS
     ),
