@@ -366,14 +366,21 @@ assertEquals('уже был', usync_state(array('id' => 77, 'existed' => true, '
     'найденная запись — «уже был» и в режиме проверки');
 assertEquals('создан', usync_state(array('id' => 77, 'existed' => false)), 'в боевом режиме — «создан»');
 
-echo "\n16. Склейки соавторов новых записей не заводят\n";
+echo "\n16. Склейка соавторов раскладывается на участников (crm#5132)\n";
 assertEquals(true,  usync_is_collab('LEVU & Ксюша Фавия'), 'амперсанд — склейка');
 assertEquals(true,  usync_is_collab('AMiD feat. T1MC'), 'feat. — склейка');
 assertEquals(true,  usync_is_collab('1996, D.masta, Смоки Мо'), 'перечисление через запятую — склейка');
 assertEquals(false, usync_is_collab('COLDLEEN'), 'обычное имя — не склейка');
 assertEquals(false, usync_is_collab('Маэстро Риф'), 'имя из двух слов — не склейка');
+assertEquals(array('LEVU', 'Ксюша Фавия'), usync_split_collab('LEVU & Ксюша Фавия'), 'разбор по амперсанду');
+assertEquals(array('1996', 'D.masta', 'Смоки Мо'), usync_split_collab('1996, D.masta, Смоки Мо'), 'разбор по запятой');
+assertEquals(array('Ysse67', 'L!K'), usync_split_collab('Ysse67 feat. L!K'), 'разбор по feat.');
+assertEquals(array('AMiD', 'T1MC'), usync_split_collab('AMiD ft T1MC'), 'разбор по ft без точки');
+assertEquals(array('GST Music', 'Varvara Krasa', 'Matushka Rodnaya'),
+    usync_split_collab('GST Music & Varvara Krasa & Matushka Rodnaya'), 'три участника');
+assertEquals(array('A', 'B'), usync_split_collab('A & B & A'), 'повтор участника отброшен');
 
-# новой склейки нет ни в одной базе: не заводим, трек синхронизируем без ссылки
+# новой склейки нет ни в одной базе: участники заводятся, трек ссылается на всех
 $calls = array();
 $records['ups:165906636:RUA1B2500011'] = record(9011, 'RUA1B2500011');
 $stats = usync_sync(array(
@@ -381,15 +388,37 @@ $stats = usync_sync(array(
                             'artist' => 'Новый & Тоже Новый', 'album' => '', 'upc' => ''),
 ));
 assertEquals(1, $stats['artists_collab'], 'склейка учтена отдельным счётчиком');
-assertEquals(0, $stats['artists_new'], 'артист не создан');
-assertEquals(1, $stats['tracks_synced'], 'трек всё равно синхронизирован');
-$created = array_filter($calls, function ($call) { return strpos($call['url'], '_m_new/10869') !== false
-                                                      || strpos($call['url'], '_m_new/308') !== false; });
-assertEquals(0, count($created), 'ни в upsound, ни в ups запись не заводится');
-$set = $calls[count($calls) - 1];
-assertEquals(false, isset($set['post']['t165912539']), 'ссылка на артиста у трека не проставляется');
-assertEquals(false, strpos(file_get_contents(USYNC_ARTISTS_FILE), 'Новый & Тоже Новый') !== false,
-    'склейка не дописана в logs/artists.txt');
+assertEquals(2, $stats['artists_new'], 'заведены оба участника');
+assertEquals(1, $stats['tracks_synced'], 'трек синхронизирован');
+$new_upsound = array_values(array_filter($calls, function ($call) { return strpos($call['url'], 'upsound/_m_new/10869') !== false; }));
+$new_ups     = array_values(array_filter($calls, function ($call) { return strpos($call['url'], 'ups/_m_new/308') !== false; }));
+assertEquals(array('Новый', 'Тоже Новый'), array_map(function ($c) { return $c['post']['t10869']; }, $new_upsound),
+    'в upsound заведены участники, а не склейка');
+assertEquals(array('Новый', 'Тоже Новый'), array_map(function ($c) { return $c['post']['t308']; }, $new_ups),
+    'в ups заведены участники, а не склейка');
+# ID записей из заглушки: 1000 + номер вызова
+$ids = array('upsound' => array(), 'ups' => array());
+foreach ($calls as $n => $call) {
+    if (strpos($call['url'], '/_m_new/10869') !== false) $ids['upsound'][] = 1000 + $n + 1;
+    if (strpos($call['url'], '/_m_new/308') !== false)   $ids['ups'][]     = 1000 + $n + 1;
+}
+assertEquals($ids['upsound'][0], $new_ups[0]['post']['t165939785'], 'у первого участника в ups ID из upsound');
+assertEquals($ids['upsound'][1], $new_ups[1]['post']['t165939785'], 'у второго участника в ups ID из upsound');
+$track_new = array_values(array_filter($calls, function ($call) { return strpos($call['url'], '/_m_new/291') !== false; }));
+assertEquals($ids['upsound'][0], $track_new[0]['post']['t16543'], 'трек в upsound создан со ссылкой на первого участника');
+$sets_upsound = array_values(array_filter($calls, function ($call) { return strpos($call['url'], 'upsound/_m_set/') !== false; }));
+assertEquals(1, count($sets_upsound), 'второй участник добавлен в upsound отдельной командой');
+assertEquals(array('t16543' => $ids['upsound'][1], 'token' => 'test-token-upsound', '_xsrf' => 'xsrf-upsound'),
+    $sets_upsound[0]['post'], 'в upsound добавлена ссылка на второго участника, и только она');
+$sets_ups = array_values(array_filter($calls, function ($call) { return strpos($call['url'], 'ups/_m_set/9011') !== false; }));
+assertEquals(2, count($sets_ups), 'в ups дозапись реквизитов и отдельная ссылка на второго участника');
+assertEquals($ids['ups'][0], $sets_ups[0]['post']['t165912539'], 'в ups первый участник ушёл с реквизитами');
+assertEquals($ids['ups'][1], $sets_ups[1]['post']['t165912539'], 'в ups второй участник добавлен следом');
+$listed = file_get_contents(USYNC_ARTISTS_FILE);
+assertEquals(true, strpos($listed, "Новый\r\n") !== false && strpos($listed, "Тоже Новый\r\n") !== false,
+    'участники дописаны в logs/artists.txt');
+assertEquals(true, strpos($listed, 'Новый & Тоже Новый') !== false,
+    'склейка дописана в logs/artists.txt, повторно её не раскладываем');
 
 # склейка, которая уже есть в обеих базах: ссылку проставляем, связь не рвём
 $calls = array();
@@ -400,12 +429,14 @@ $stats = usync_sync(array(
     'RUA1B2500012' => array('isrc' => 'RUA1B2500012', 'title' => 'Известный дуэт',
                             'artist' => 'Дуэт & Дуэт', 'album' => '', 'upc' => ''),
 ));
-assertEquals(0, $stats['artists_collab'], 'существующая склейка пропуском не считается');
 $set = $calls[count($calls) - 1];
 assertEquals(7002, $set['post']['t165912539'], 'ссылка на существующую запись проставлена');
+$created = array_filter($calls, function ($call) { return strpos($call['url'], '_m_new/10869') !== false
+                                                      || strpos($call['url'], '_m_new/308') !== false; });
+assertEquals(0, count($created), 'существующая запись не раскладывается');
 
-# склейка, которая в ups лежит с экранированной запятой, поиском не находится:
-# её просто пропускаем, а трек синхронизируем без ссылки
+# имя с запятой, которое в ups лежит с экранированной запятой: поиском в ups не находится,
+# но в upsound запись есть — значит, это имя, а не склейка: не раскладываем и дубль не заводим
 $calls = array();
 $records['upsound:10869:Son, Fire!']   = record(7010, 'Son, Fire!');
 $records['ups:308:Son\\, Fire!']       = record(7011, 'Son\\, Fire!');
@@ -414,10 +445,14 @@ $stats = usync_sync(array(
     'RUA1B2500013' => array('isrc' => 'RUA1B2500013', 'title' => 'Группа с запятой',
                             'artist' => 'Son, Fire!', 'album' => '', 'upc' => ''),
 ));
-assertEquals(1, $stats['artists_collab'], 'склейка пропущена');
-assertEquals(1, $stats['tracks_synced'], 'трек синхронизирован без ссылки на артиста');
-$created = array_filter($calls, function ($call) { return strpos($call['url'], '_m_new/308') !== false; });
-assertEquals(0, count($created), 'дубль в ups не заводится');
+assertEquals(1, $stats['tracks_synced'], 'трек синхронизирован');
+$created = array_filter($calls, function ($call) { return strpos($call['url'], '_m_new/308') !== false
+                                                      || strpos($call['url'], '_m_new/10869') !== false; });
+assertEquals(0, count($created), 'ни участники, ни дубль не заводятся');
+$track_new = array_values(array_filter($calls, function ($call) { return strpos($call['url'], '/_m_new/291') !== false; }));
+assertEquals(7010, $track_new[0]['post']['t16543'], 'в upsound трек связан с найденной записью');
+$set = $calls[count($calls) - 1];
+assertEquals(false, isset($set['post']['t165912539']), 'в ups ссылку не на что ставить');
 
 echo "\n17. Одна склейка проверяется один раз, сколько бы у неё ни было треков\n";
 $calls = array();
@@ -437,6 +472,10 @@ $looked = array_filter($calls, function ($call) use ($collab) {
         || strpos($call['url'], '/object/308?') !== false;
 });
 assertEquals(2, count($looked), 'поиск склейки выполнен ровно дважды: по разу на базу');
+$created = array_filter($calls, function ($call) { return strpos($call['url'], '_m_new/10869') !== false; });
+assertEquals(2, count($created), 'участники заведены по одному разу');
+$added = array_filter($calls, function ($call) { return strpos($call['url'], 'upsound/_m_set/') !== false; });
+assertEquals(3, count($added), 'второй участник добавлен каждому из трёх треков в upsound');
 
 echo "\n18. В скриптах загрузки не осталось зашитых секретов\n";
 foreach (array('ftplist2025.php', 'ftplist25.php') as $script) {
